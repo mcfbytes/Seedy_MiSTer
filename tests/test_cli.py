@@ -59,12 +59,14 @@ class CliTest(unittest.TestCase):
             os.remove(os.path.join(self.d, f"baseline-{s}.json"))
         for s in (2, 4, 18):
             os.remove(os.path.join(self.d, f"candidate-{s}.json"))
+        with open(self.meta, "w") as fh:
+            json.dump(dict(helpers.META, mode="hunt", min_met=2, seeds="1-50"), fh)
         run("aggregate", self.d, "--seeds", "1-50", "--variants", "candidate", "--allow-partial",
             "--meta", self.meta, "--out", m)
         run("render-single", m, "--out-dir", os.path.join(self.d, "r"))
         c = open(os.path.join(self.d, "r", "comment.md")).read()
         self.assertIn("**not reached**", c)
-        self.assertIn("seed_start: 31", c)
+        self.assertIn("seed_start: 51", c)  # past the planned range: nothing repeats
         self.assertIn("Closest seed (none met timing)", c)
 
     def test_decide_and_apply_seed(self):

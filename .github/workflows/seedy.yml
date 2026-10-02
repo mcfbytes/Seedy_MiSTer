@@ -262,7 +262,8 @@ jobs:
           python3 -m seedy plan --seeds "$list" --shards "$SHARDS" --variants "${{ steps.refs.outputs.variants }}" \
             --project "${{ steps.refs.outputs.project }}" --revision "${{ steps.refs.outputs.revision }}" \
             --baseline-sha "${{ steps.refs.outputs.baseline_sha }}" --image "${{ steps.refs.outputs.image }}" \
-            --threads "$THREADS" --build-epoch "${{ steps.refs.outputs.build_epoch }}" | tee -a "$GITHUB_OUTPUT"
+            --threads "$THREADS" --build-epoch "${{ steps.refs.outputs.build_epoch }}" \
+            --npaths "${{ inputs.worst_paths }}" | tee -a "$GITHUB_OUTPUT"
 
       - name: Baseline cache lookup
         id: cache
@@ -489,7 +490,14 @@ jobs:
 
       - name: Aggregate (fails on any missing seed, except seeds a hunt never started)
         run: |
-          partial=(); [ "${{ needs.plan.outputs.mode }}" = hunt ] && partial=(--allow-partial)
+          partial=()
+          if [ "${{ needs.plan.outputs.mode }}" = hunt ]; then
+            partial=(--allow-partial)
+            # a crashed or timed-out shard must not pass for a hunt that simply stopped early
+            if [ "${{ needs.compile.result }}" != success ]; then
+              partial+=(--incomplete); echo "::warning::some Seedy compile jobs did not succeed (${{ needs.compile.result }})"
+            fi
+          fi
           python3 -m seedy aggregate shards --seeds "${{ needs.plan.outputs.seeds }}" "${partial[@]}" \
             --variants "${{ needs.plan.outputs.variants }}" --meta plan/meta.json --out results/merged.json
 
@@ -578,14 +586,18 @@ jobs:
           import json, os
           m = json.load(open("results/merged.json"))
           base = [r for r in m["records"] if r["variant"] == "baseline"]
-          if any(r.get("status") != "ok" for r in base):
-              print("baseline has failed compiles; storing anyway, they are data")
+          failed = sorted(r["seed"] for r in base if r.get("status") != "ok")
+          if failed:
+              # a failure may be environmental (OOM, timeout); caching it would skew every later comparison
+              print(f"::warning::not caching this baseline: seeds {failed} failed to compile")
+              raise SystemExit(0)
           os.makedirs("store", exist_ok=True)
           json.dump(base, open("store/records.json", "w"))
           meta = {k: m["meta"].get(k) for k in ("project", "revision", "baseline", "image", "seeds", "threads",
                                                  "build_epoch", "quartus_version", "run_url", "cache_key")}
           json.dump(meta, open("store/meta.json", "w"), indent=1)
           PY
+          [ -d store ] || exit 0
           git init -q data && cd data
           git config user.name "github-actions[bot]"
           git config user.email "41898299+github-actions[bot]@users.noreply.github.com"

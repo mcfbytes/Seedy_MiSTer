@@ -182,10 +182,9 @@ def seed_section(res):
     lines.append(f"**{tag} for hardware testing: {s['best']}**: {s['best_why']}.")
     if meta.get("rbf_artifact"):
         lines.append(f"Its `.rbf` is in the `{meta['rbf_artifact']}` artifact; that exact bitstream is what was measured.")
-    if s.get("applied"):
-        lines.append(f"Committed to `{meta['revision']}.qsf` as {s['applied']}.")
-    elif meta.get("seed_policy", "never") not in ("never", "off"):
-        lines.append(f"Not committed: {s['reason']}.")
+    if meta.get("seed_policy", "never") not in ("never", "off"):
+        lines.append(("Will be committed to the branch (if it hasn't moved since this run): " if s.get("apply")
+                      else "Not committed: ") + s["reason"] + ".")
     if len(s.get("top", [])) > 1:
         lines.append("Runners-up: " + "; ".join(t["why"] for t in s["top"][1:4]) + ".")
     return "\n".join(lines)
@@ -377,13 +376,19 @@ def single(merged, decision, run_url=None, status_lines=()):
              f"*{len(met)} meet timing*")
     out = [marker(meta["project"]), title, ""]
     if hunt:
+        from seedy.plan import parse_seeds
         target = meta.get("min_met", 1)
+        planned = parse_seeds(meta["seeds"]) if meta.get("seeds") else [r["seed"] for r in recs]
         out.append(f"Hunted seeds {meta.get('seeds')}: compiled {len(recs)}, {len(recs) - len(ok)} failed to compile, "
                    f"{len(not_run)} not started. Target was {target} seed(s) meeting timing: "
                    + ("**reached**." if len(met) >= target else "**not reached**."))
-        if not_run:
-            out.append(f"To continue the hunt, run again with `seed_start: {max(r['seed'] for r in recs) + 1}`"
-                       " (seeds already compiled are not repeated)." if not met or len(met) < target else "")
+        if meta.get("incomplete"):
+            out.append("⚠️ **Some compile jobs failed or timed out**, so some of the seeds counted as not started were "
+                       "lost, not skipped. See the run's job logs.")
+        if len(met) < target:
+            # seeds are interchangeable random draws: continuing past the planned range repeats nothing,
+            # and the unstarted seeds inside it are no more promising than new ones
+            out.append(f"To continue, run again with `seed_start: {max(planned) + 1}`; no seed is compiled twice.")
         out.append("")
     out.append(f"Seeds meeting timing: {', '.join(map(str, met)) if met else 'none'}.")
     out.append("")

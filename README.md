@@ -107,17 +107,22 @@ On some cores (Saturn and PSX are the usual suspects) most seeds fail timing. Th
 
 * It walks seeds `seed_start … seed_start + max_seeds − 1`, and stops early once `min_met` seeds meet timing.
 * It never starts a compile that would overrun `hunt_minutes` (GitHub-hosted jobs die at 6 h). When the hunt ends
-  without enough seeds, the report says so and tells you which `seed_start` continues it, so no seed is
-  compiled twice.
+  without enough seeds, the report gives the `seed_start` for the next run. That is the first seed past this
+  run's range, so no seed is compiled twice. Seeds are interchangeable random draws, so any seeds this run
+  never started are no better than new ones.
 * If no seed meets timing, you still get the **closest** seeds, ranked by worst slack and then total negative
   slack. You also get the clocks that fail and how often, and the endpoints that keep failing. That is the
   to-do list for fixing the design rather than rolling more dice.
 * With `override_seed: if-failing`, a hunt that finds a closing seed commits it, unless the hunt showed the
   `.qsf`'s current seed already closes. Seedy knows that only when the current seed was in the hunted range.
+* If a compile job crashes or times out, the report says so. It never passes off lost seeds as "not started".
 
-The shards hunt in parallel and each stops on its own share of `min_met` (`ceil(min_met / shards)`), so a
-hosted run can overshoot `min_met` by a few seeds. A single self-hosted job with `shards: 1` stops exactly at
-`min_met`.
+**How the stop works with several jobs.** GitHub Actions jobs can't signal each other while they run, so each
+shard hunts on its own and stops at its own share of `min_met`, which is `ceil(min_met / shards)`. With the
+defaults (`min_met: 1`, `shards: 10`) one shard can find a closing seed in the first hour while the other nine
+keep compiling until they each find one or hit `hunt_minutes`. A hosted hunt therefore tends to use its whole
+time budget. Choose `shards` to match how much compute you want to spend, not how fast you want the first hit.
+Only a single job (`shards: 1`, typically one big self-hosted machine) stops exactly when `min_met` seeds meet timing.
 
 ## <img src="art/icons/ticket-48.png" width="24" alt=""> The best seed: test it, then ship it
 
@@ -196,10 +201,10 @@ because `auto` sizes concurrency from what Linux sees.
 The same scripts run on a workstation with Docker, for example to check a branch overnight before you open a PR:
 
 ```sh
-git -C ~/SNES_MiSTer archive master    -o /tmp/base.tar
-git -C ~/SNES_MiSTer archive my-branch -o /tmp/cand.tar
-quartus/compile-shard.sh --src /tmp/base.tar --variant baseline  --seeds 1-8 --out out/base --concurrency 2
-quartus/compile-shard.sh --src /tmp/cand.tar --variant candidate --seeds 1-8 --out out/cand --concurrency 2 \
+git -C ~/SNES_MiSTer archive master    -o base.tar
+git -C ~/SNES_MiSTer archive my-branch -o cand.tar
+quartus/compile-shard.sh --src base.tar --variant baseline  --seeds 1-8 --out out/base --concurrency 2
+quartus/compile-shard.sh --src cand.tar --variant candidate --seeds 1-8 --out out/cand --concurrency 2 \
     --watch-file watch.txt --keep-rbf all       # watch.txt: one register glob per line, e.g. *ramimg*
 python3 -m seedy aggregate out/base out/cand --seeds 1-8 --project SNES --out merged.json
 python3 -m seedy render merged.json --out-dir report   # report/comment.md, seeds.csv, per-clock.csv, best-seed.json …

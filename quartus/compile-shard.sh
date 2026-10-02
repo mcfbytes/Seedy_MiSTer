@@ -6,7 +6,7 @@
 #
 # Options (defaults in brackets): --project/--revision [auto] --image [theypsilon/quartus-lite-c5:17.0.2]
 #   --concurrency [auto] --threads [4] --npaths [40] --watch-file [none] --build-epoch [ref tar mtime]
-#   --keep-rbf none|all [none] --work [$RUNNER_TEMP or /tmp]/seedy-work --name [seedy-<variant>]
+#   --keep-rbf none|all [none] --work [$RUNNER_TEMP/seedy-work, else next to --out] --name [seedy-<variant>]
 #   --peak-gb [7, RAM per compile for --concurrency auto] --timeout [4h per compile] --meta '<json merged into every record>'
 # Hunt mode (hard-to-close cores): seeds are tried in the order given, and no new seed starts once
 #   --stop-after-met K   K seeds of this shard have met timing, or
@@ -19,7 +19,7 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 SRC= VARIANT= SEEDS= OUT= PROJECT= REVISION= IMAGE=theypsilon/quartus-lite-c5:17.0.2
 CONC=auto THREADS=4 NPATHS=40 WATCH= EPOCH= KEEP_RBF=none NAME= TIMEOUT=4h META='{}' STOP_MET=0 DEADLINE=0 PEAK_GB=7
-WORK="${RUNNER_TEMP:-/tmp}/seedy-work"
+WORK=
 while [ $# -gt 0 ]; do
   case "$1" in
     --src) SRC=$2;; --variant) VARIANT=$2;; --seeds) SEEDS=$2;; --out) OUT=$2;;
@@ -34,7 +34,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$SRC" ] && [ -n "$VARIANT" ] && [ -n "$SEEDS" ] && [ -n "$OUT" ] || { echo "need --src --variant --seeds --out" >&2; exit 2; }
 NAME=${NAME:-seedy-$VARIANT}
-SRC=$(realpath "$SRC"); mkdir -p "$OUT/records" "$OUT/logs" "$WORK"; OUT=$(realpath "$OUT"); WORK=$(realpath "$WORK")
+# never default to /tmp: each in-flight seed needs ~1-2 GB, and /tmp is often a small shared tmpfs
+mkdir -p "$OUT/records" "$OUT/logs"; OUT=$(realpath "$OUT")
+WORK=${WORK:-${RUNNER_TEMP:+$RUNNER_TEMP/seedy-work}}; WORK=${WORK:-$OUT/../seedy-work}
+SRC=$(realpath "$SRC"); mkdir -p "$WORK"; WORK=$(realpath "$WORK")
+SEED_LIST=$(python3 -m seedy expand-seeds "$SEEDS")   # "1-30" or "1,11,21" -> one seed per word
 [ -n "$WATCH" ] && WATCH=$(realpath "$WATCH")
 
 # project / revision / build date come from the source itself
@@ -69,51 +73,51 @@ run_seed() {
         timeout 1h quartus_sta -t seedy_sta.tcl '$PROJECT' '$REVISION' sta.tsv $NPATHS seedy-watch.txt > sta.log 2>&1 || rm -f sta.tsv
       fi
       cat /sys/fs/cgroup/memory.peak > mem.peak 2>/dev/null || true" || rc=$?
-  local log="$d/compile.log"
+  local log="$d/compile.log" peak=0 rec="$OUT/records/$VARIANT-$seed.json"
+  [ -s "$d/mem.peak" ] && peak=$(tr -dc 0-9 < "$d/mem.peak")
+  # written to a temp name and renamed, so the stop checks below never read a half-written record
   python3 -m seedy collect "$d" --revision "$REVISION" --seed "$seed" --variant "$VARIANT" \
-    --meta "$(python3 -c 'import json,sys; m=json.loads(sys.argv[1]); m.update(image=sys.argv[2], wall_s=int(sys.argv[3])); print(json.dumps(m))' "$META" "$IMAGE" "$((SECONDS - t0))")" \
-    --log "$log" --out "$OUT/records/$VARIANT-$seed.json"
-  if [ -s "$d/mem.peak" ]; then
-    python3 - "$OUT/records/$VARIANT-$seed.json" "$(cat "$d/mem.peak")" <<'PY'
-import json, sys
-p = sys.argv[1]; r = json.load(open(p)); r["cgroup_peak_bytes"] = int(sys.argv[2]); json.dump(r, open(p, "w"), indent=1, sort_keys=True)
-PY
-  fi
+    --meta "$(python3 -c 'import json,sys; m=json.loads(sys.argv[1]); m.update(image=sys.argv[2], wall_s=int(sys.argv[3]), cgroup_peak_bytes=int(sys.argv[4] or 0)); print(json.dumps(m))' "$META" "$IMAGE" "$((SECONDS - t0))" "$peak")" \
+    --log "$log" --out "$rec.tmp"
+  mv "$rec.tmp" "$rec"
   for f in compile.log sta.log; do [ -f "$d/$f" ] && tail -c 20000 "$d/$f" > "$OUT/logs/$VARIANT-$seed-$f" || true; done
   if [ "$KEEP_RBF" = all ] && [ -f "$d/output_files/$REVISION.rbf" ]; then
     mkdir -p "$OUT/rbf"; cp "$d/output_files/$REVISION.rbf" "$OUT/rbf/$PROJECT-$VARIANT-seed$seed.rbf"
   fi
   rm -rf "$d"
-  echo "seedy: $VARIANT seed $seed done in $((SECONDS - t0)) s (docker rc=$rc, quartus rc=$(cat "$OUT/records/$VARIANT-$seed.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])'))"
+  echo "seedy: $VARIANT seed $seed done in $((SECONDS - t0)) s (docker rc=$rc, $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$rec"))"
 }
 
-met_so_far() {
+progress() {   # "<seeds meeting timing> <slowest compile in s>" over this shard's finished records
   python3 - "$OUT/records" "$VARIANT" <<'PY'
 import glob, json, os, sys
-n = 0
+met = slowest = 0
 for p in glob.glob(os.path.join(sys.argv[1], sys.argv[2] + "-*.json")):
-    r = json.load(open(p))
-    n += bool(r.get("status") == "ok" and r.get("headline", {}).get("timing_met"))
-print(n)
+    try:
+        with open(p) as fh:
+            r = json.load(fh)
+    except (OSError, ValueError):
+        continue
+    met += bool(r.get("status") == "ok" and r.get("headline", {}).get("timing_met"))
+    slowest = max(slowest, int(r.get("wall_s") or 0))
+print(met, slowest)
 PY
 }
-slowest=0   # seconds; the longest finished compile, for the deadline check
 STATUS="$OUT/logs/shard-status-$VARIANT.txt"
 stop_reason=""
 should_stop() {
-  if [ "$STOP_MET" -gt 0 ] && [ "$(met_so_far)" -ge "$STOP_MET" ]; then stop_reason="found $STOP_MET seed(s) meeting timing"; return 0; fi
-  if [ "$DEADLINE" -gt 0 ]; then
-    local s; s=$(python3 -c 'import glob,json,sys; print(max([json.load(open(p)).get("wall_s",0) for p in glob.glob(sys.argv[1]+"/*.json")] or [0]))' "$OUT/records")
-    [ "$s" -gt "$slowest" ] && slowest=$s
-    if [ $(( $(date +%s) + slowest )) -gt "$DEADLINE" ]; then stop_reason="time budget reached"; return 0; fi
-  fi
+  [ "$STOP_MET" -gt 0 ] || [ "$DEADLINE" -gt 0 ] || return 1
+  local met slowest
+  read -r met slowest < <(progress)
+  if [ "$STOP_MET" -gt 0 ] && [ "$met" -ge "$STOP_MET" ]; then stop_reason="found $STOP_MET seed(s) meeting timing"; return 0; fi
+  if [ "$DEADLINE" -gt 0 ] && [ $(( $(date +%s) + slowest )) -gt "$DEADLINE" ]; then stop_reason="time budget reached"; return 0; fi
   return 1
 }
 
 # a simple job pool: at most $CONC compiles in flight
 pids=()
 started=()
-for seed in ${SEEDS//,/ }; do
+for seed in $SEED_LIST; do
   while [ "$(jobs -rp | wc -l)" -ge "$CONC" ]; do wait -n || true; done
   if should_stop; then echo "seedy: $VARIANT stopping before seed $seed: $stop_reason"; break; fi
   run_seed "$seed" &

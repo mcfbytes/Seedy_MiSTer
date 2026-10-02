@@ -19,7 +19,7 @@ on:
         description: "hunt: give up after this many seeds"
         default: "100"
       min_met:
-        description: "hunt: stop once this many seeds meet timing"
+        description: "hunt: stop once this many seeds meet timing (per job share: each of the parallel jobs stops at its own share)"
         default: "1"
       seed_start:
         description: "hunt: first seed (continue an earlier hunt)"
@@ -41,10 +41,6 @@ on:
   # push:
   #   branches: [master]
 
-concurrency:
-  group: seedy-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
@@ -55,6 +51,10 @@ jobs:
       github.event_name != 'pull_request' ||
       (contains(github.event.pull_request.labels.*.name, 'seedy') &&
        (github.event.action != 'labeled' || github.event.label.name == 'seedy'))
+    # job-level, not workflow-level: a run skipped by the `if` above must not cancel a run in progress
+    concurrency:
+      group: seedy-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     uses: mcfbytes/Seedy_MiSTer/.github/workflows/seedy.yml@master
     permissions:
       contents: write   # seedy-data baseline cache and seed commits on manual runs; fork PRs get read-only anyway

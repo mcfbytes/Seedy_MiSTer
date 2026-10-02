@@ -41,9 +41,14 @@ def cmd_plan(a):
            "matrix": json.dumps(plan.matrix(seeds, a.shards, variants), separators=(",", ":"))}
     if a.baseline_sha:
         out["cache_key"] = plan.cache_key(project=a.project, revision=a.revision, baseline_sha=a.baseline_sha,
-                                          image=a.image, seeds=seeds, threads=a.threads, build_epoch=a.build_epoch)
+                                          image=a.image, seeds=seeds, threads=a.threads, build_epoch=a.build_epoch,
+                                          npaths=a.npaths)
     for k, v in out.items():
         print(f"{k}={v}")
+
+
+def cmd_expand_seeds(a):
+    print(" ".join(str(x) for x in plan.parse_seeds(a.seeds)))
 
 
 def cmd_concurrency(a):
@@ -120,6 +125,8 @@ def cmd_aggregate(a):
     if not ordered:
         sys.exit("no results at all")
     meta["not_run"] = {v: [s for (vv, s) in missing if vv == v] for v in variants}
+    if a.incomplete:
+        meta["incomplete"] = True
     versions = sorted({r.get("quartus_version") for r in ordered if r.get("quartus_version")})
     if versions:
         meta["quartus_version"] = "; ".join(versions)
@@ -233,7 +240,12 @@ def main(argv=None):
     p.add_argument("--image", default="")
     p.add_argument("--threads", type=int, default=4)
     p.add_argument("--build-epoch", type=int, default=0)
+    p.add_argument("--npaths", type=int, default=40)
     p.set_defaults(fn=cmd_plan)
+
+    p = sub.add_parser("expand-seeds", help="'1-3,7' -> '1 2 3 7' (for shell loops)")
+    p.add_argument("seeds")
+    p.set_defaults(fn=cmd_expand_seeds)
 
     p = sub.add_parser("concurrency", help="compiles that fit on this machine")
     p.add_argument("--threads", type=int, default=4)
@@ -279,6 +291,8 @@ def main(argv=None):
     p.add_argument("--meta", default="")
     p.add_argument("--allow-partial", action="store_true", help="hunt mode: unrun seeds are fine")
     p.add_argument("--project", default="", help="name shown in the report when no --meta is given")
+    p.add_argument("--incomplete", action="store_true",
+                   help="some compile jobs failed or timed out: say so instead of 'hunt stopped early'")
     p.add_argument("--out", default="-")
     p.set_defaults(fn=cmd_aggregate)
 

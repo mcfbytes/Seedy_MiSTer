@@ -34,7 +34,7 @@ class PlanTest(unittest.TestCase):
         k = plan.cache_key(**kw)
         self.assertEqual(k, plan.cache_key(**kw))
         for field, val in (("baseline_sha", "abd"), ("image", "img@sha256:2"), ("seeds", [1, 3]),
-                           ("threads", 2), ("build_epoch", 2)):
+                           ("threads", 2), ("build_epoch", 2), ("npaths", 100)):
             self.assertNotEqual(k, plan.cache_key(**dict(kw, **{field: val})), field)
 
 

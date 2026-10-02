@@ -2,7 +2,7 @@
 import hashlib
 import json
 
-from seedy import MAJOR
+from seedy import __version__
 
 
 def parse_seeds(spec):
@@ -47,12 +47,13 @@ def shard(seeds, shards):
     return [seeds[i::shards] for i in range(shards)]
 
 
-def cache_key(*, project, revision, baseline_sha, image, seeds, threads, build_epoch):
-    """Everything that can change a baseline result. image should be digest-pinned."""
+def cache_key(*, project, revision, baseline_sha, image, seeds, threads, build_epoch, npaths=40):
+    """Everything that can change a baseline result. image should be digest-pinned. The full Seedy
+    version is included because any parser or STA-script change can change a record."""
     blob = json.dumps({
         "project": project, "revision": revision, "sha": baseline_sha, "image": image,
-        "seeds": format_seeds(seeds), "threads": int(threads), "seedy": MAJOR,
-        "build_epoch": int(build_epoch),
+        "seeds": format_seeds(seeds), "threads": int(threads), "seedy": __version__,
+        "build_epoch": int(build_epoch), "npaths": int(npaths),
     }, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
