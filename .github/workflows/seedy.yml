@@ -105,11 +105,11 @@ on:
       runs_on:
         description: JSON runner labels for the compile jobs, e.g. '["self-hosted","linux","quartus"]'.
         type: string
-        default: '["ubuntu-latest"]'
+        default: '["ubuntu-26.04"]'
       light_runs_on:
         description: JSON runner labels for the short plan/aggregate jobs.
         type: string
-        default: '["ubuntu-latest"]'
+        default: '["ubuntu-26.04"]'
       compile_timeout:
         description: Per-compile timeout (coreutils duration).
         type: string

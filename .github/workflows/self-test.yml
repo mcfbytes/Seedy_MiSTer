@@ -10,10 +10,10 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
-        python: ["3.10", "3.13"]
+        python: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,7 +25,7 @@ jobs:
       - run: bash -n quartus/compile-shard.sh
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,6 +33,7 @@ jobs:
       - name: actionlint (workflows and templates)
         run: |
           mkdir -p "$RUNNER_TEMP/t/.github/workflows" && cp templates/*.yml "$RUNNER_TEMP/t/.github/workflows/"
+          cp .github/actionlint.yaml "$RUNNER_TEMP/t/.github/"
           git -C "$RUNNER_TEMP/t" init -q
-          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12
-          docker run --rm -v "$RUNNER_TEMP/t:/repo" -w /repo rhysd/actionlint:1.7.12
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          docker run --rm -v "$RUNNER_TEMP/t:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
