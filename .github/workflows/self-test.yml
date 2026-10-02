@@ -1,0 +1,38 @@
+# Seedy's own CI: unit tests against the golden SNES fixture, and lint of every workflow.
+name: Self-test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s tests -t . -v
+      - run: bash -n quartus/compile-shard.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint (workflows and templates)
+        run: |
+          mkdir -p "$RUNNER_TEMP/t/.github/workflows" && cp templates/*.yml "$RUNNER_TEMP/t/.github/workflows/"
+          git -C "$RUNNER_TEMP/t" init -q
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12
+          docker run --rm -v "$RUNNER_TEMP/t:/repo" -w /repo rhysd/actionlint:1.7.12

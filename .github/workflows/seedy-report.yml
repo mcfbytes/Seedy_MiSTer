@@ -1,0 +1,153 @@
+# MiSTer Seedy: reusable PR reporter. A core repo calls this from a workflow_run workflow
+# (templates/seedy-report.yml) that fires when its Seedy workflow finishes.
+#
+# It runs in the base repo's trusted context, never checks out or executes PR code, and treats the
+# results artifact as untrusted data: the PR number is cross-checked against GitHub's own record of
+# the triggering run before anything is posted or pushed.
+name: Seedy report (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      override_seed:
+        description: "never | if-failing | always: commit the best seed to the PR branch (same-repo PRs only)."
+        type: string
+        default: never
+      seedy_repo:
+        type: string
+        default: mcfbytes/Seedy_MiSTer
+      seedy_ref:
+        type: string
+        default: master
+
+permissions: {}
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read          # download the run's artifacts
+      pull-requests: write   # post / update the comment
+      contents: write        # only used to commit a seed to a same-repo PR branch
+    env:
+      PYTHONPATH: ${{ github.workspace }}/.seedy
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+      RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+      POLICY: ${{ inputs.override_seed }}
+    steps:
+      - name: Seedy scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.seedy_repo }}
+          ref: ${{ inputs.seedy_ref }}
+          path: .seedy
+          persist-credentials: false
+
+      - name: Results
+        id: results
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: seedy-results
+          path: results
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Plan (for failed runs)
+        if: steps.results.outcome != 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: seedy-plan
+          path: results
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Find the PR (verified against the triggering run)
+        id: pr
+        run: |
+          set -euo pipefail
+          [ -f results/meta.json ] || { echo "no Seedy metadata in run $RUN_ID; nothing to report"; echo "number=" >> "$GITHUB_OUTPUT"; exit 0; }
+          n=$(python3 -c 'import json; n=json.load(open("results/meta.json"))["pr"]["number"]; assert isinstance(n, int) and n > 0; print(n)')
+          # the artifact is untrusted: the PR must be the one this run was triggered for
+          read -r head_repo head_ref head_sha state < <(gh api "repos/$REPO/pulls/$n" --jq '[.head.repo.full_name, .head.ref, .head.sha, .state] | @tsv')
+          if [ "$head_repo" != "$RUN_HEAD_REPO" ] || [ "$head_ref" != "$RUN_HEAD_BRANCH" ]; then
+            echo "::error::PR #$n ($head_repo:$head_ref) does not match the triggering run ($RUN_HEAD_REPO:$RUN_HEAD_BRANCH)"; exit 1
+          fi
+          {
+            echo "number=$n"; echo "head_sha=$head_sha"; echo "state=$state"
+            echo "same_repo=$([ "$head_repo" = "$REPO" ] && echo true || echo false)"
+            echo "current=$([ "$head_sha" = "$RUN_HEAD_SHA" ] && echo true || echo false)"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Failure note
+        if: steps.pr.outputs.number != '' && steps.results.outcome != 'success'
+        run: |
+          project=$(python3 -c 'import json,re; p=json.load(open("results/meta.json"))["project"]; assert re.fullmatch(r"[A-Za-z0-9_.-]+", p); print(p)')
+          printf '<!-- seedy:%s -->\n**Seedy — %s @ %s**: the run ended with *%s* before producing results. See [the run](%s).\n' \
+            "$project" "$project" "${RUN_HEAD_SHA:0:7}" "$RUN_CONCLUSION" "$RUN_URL" > results/comment.md
+
+      - name: Seed decision (trusted policy)
+        id: seed
+        if: steps.pr.outputs.number != '' && steps.results.outcome == 'success'
+        run: |
+          set -euo pipefail
+          python3 -m seedy decide results/best-seed.json --policy "$POLICY" > decision.txt
+          cat decision.txt
+          apply=$(sed -n 's/^apply=//p' decision.txt); seed=$(sed -n 's/^best_seed=//p' decision.txt)
+          rev=$(python3 -c 'import json,re; r=json.load(open("results/meta.json"))["revision"]; assert re.fullmatch(r"[A-Za-z0-9_.-]+", r); print(r)')
+          cand=$(python3 -c 'import json; print(json.load(open("results/meta.json"))["candidate"]["sha"])')
+          ok=true
+          [[ "$seed" =~ ^[0-9]{1,9}$ ]] || ok=false
+          [ "${{ steps.pr.outputs.same_repo }}" = true ] || { [ "$apply" = true ] && echo "fork PR: the seed is suggested, not pushed"; ok=false; }
+          [ "${{ steps.pr.outputs.current }}" = true ] && [ "$cand" = "$RUN_HEAD_SHA" ] || { [ "$apply" = true ] && echo "PR moved since the run; not pushing"; ok=false; }
+          [ "${{ steps.pr.outputs.state }}" = open ] || ok=false
+          { echo "push=$([ "$apply" = true ] && [ "$ok" = true ] && echo true || echo false)"; echo "seed=$seed"; echo "revision=$rev"; } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Commit the seed to the PR branch
+        id: commit
+        if: steps.seed.outputs.push == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          path: core
+
+      - name: Push
+        if: steps.seed.outputs.push == 'true'
+        working-directory: core
+        env:
+          SEED: ${{ steps.seed.outputs.seed }}
+          REV: ${{ steps.seed.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$RUN_HEAD_SHA" ] || { echo "branch moved; not pushing"; exit 0; }
+          # only a text edit of one .qsf line: no PR code is executed here
+          python3 -m seedy apply-seed "$REV.qsf" --seed "$SEED"
+          git diff --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "Use fitter seed $SEED (Seedy)" -m "Measured by $RUN_URL"
+          git push origin "HEAD:$RUN_HEAD_BRANCH"
+          # shellcheck disable=SC2016 # the backticks are Markdown
+          printf '\n\n✅ Seedy committed `SEED %s` to `%s.qsf` as %s.\n' "$SEED" "$REV" "$(git rev-parse --short HEAD)" >> ../results/comment.md
+
+      - name: Post or update the PR comment
+        if: steps.pr.outputs.number != ''
+        env:
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          marker=$(head -1 results/comment.md)
+          python3 -c 'import re,sys; sys.exit(not re.fullmatch(r"<!-- seedy:[A-Za-z0-9_.-]+ -->", sys.argv[1]))' "$marker" \
+            || { echo "::error::comment.md lacks the Seedy marker"; exit 1; }
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                 --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | tail -1)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@results/comment.md >/dev/null; echo "updated comment $id"
+          else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@results/comment.md >/dev/null; echo "posted a comment on #$PR"; fi

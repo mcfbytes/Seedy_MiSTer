@@ -1,0 +1,18 @@
+Multicorner Timing Analysis Worst-Case Slack: Setup
+Exploration Point,FPGA_CLK1_50,FPGA_CLK2_50,altera_reserved_tck,emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter[0].output_counter|divclk,emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter[1].output_counter|divclk,emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter[2].output_counter|divclk,pll_audio|pll_audio_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk,pll_hdmi|pll_hdmi_inst|altera_pll_i|cyclonev_pll|counter[0].output_counter|divclk,spi_sck,sysmem|fpga_interfaces|clocks_resets|h2f_user0_clk,Worst-Case Slack
+dse1_SNES_1,7.693,5.769,8.137,-0.335,6.766,-0.515,14.799,0.064,4.245,4.048,-0.515
+dse1_SNES_2,7.672,5.692,8.850,-1.124,8.479,-0.082,14.902,0.081,5.770,3.900,-1.124
+dse1_SNES_3,6.979,4.910,8.463,-0.384,6.828,0.410,14.094,-0.236,5.193,1.528,-0.384
+dse1_SNES_4,7.996,5.550,9.403,0.188,7.778,0.517,14.612,0.138,5.720,2.058,0.138
+dse1_SNES_5,7.857,4.996,9.202,-1.079,8.617,-0.855,13.566,-0.023,5.796,3.052,-1.079
+dse1_SNES_6,7.787,4.725,8.819,-0.753,8.746,-0.934,14.626,0.268,6.290,4.002,-0.934
+dse1_SNES_7,7.188,5.959,8.808,-0.103,6.709,-0.074,14.729,0.050,5.099,0.938,-0.103
+dse1_SNES_8,8.168,5.369,9.020,0.290,7.768,0.109,14.117,0.163,5.641,4.414,0.109
+dse1_SNES_9,6.290,5.271,8.945,-1.098,8.946,-1.507,13.868,-0.129,5.466,4.155,-1.507
+dse1_SNES_10,8.068,5.071,8.981,-0.513,8.038,-0.547,14.040,0.245,5.231,3.556,-0.547
+dse1_SNES_11,8.265,4.717,7.527,0.222,8.007,0.357,14.178,0.042,6.193,1.927,0.042
+dse1_SNES_12,7.973,5.056,9.985,-0.076,6.758,-0.127,14.940,-0.483,3.433,3.988,-0.483
+dse1_SNES_13,7.934,4.917,8.589,0.038,8.687,0.289,14.621,0.243,5.756,1.610,0.038
+dse1_SNES_14,7.955,5.503,6.967,-0.412,7.533,0.322,12.724,-0.135,5.338,2.165,-0.412
+dse1_SNES_15,7.551,5.806,9.663,-0.348,6.424,0.110,14.388,-0.046,5.542,1.565,-0.348
+dse1_SNES_16,7.757,5.365,9.522,-1.407,6.747,-0.382,13.382,-0.092,5.093,1.523,-1.407

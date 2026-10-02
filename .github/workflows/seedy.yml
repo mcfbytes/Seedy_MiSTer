@@ -1,0 +1,652 @@
+# MiSTer Seedy: reusable workflow. A core repo calls this from templates/seedy.yml.
+# Compiles the candidate (and, unless cached, the baseline) across N fitter seeds with Quartus,
+# compares the two populations, and publishes results, a PR comment body and the best seed.
+name: Seedy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "compare (PR vs baseline, the #462 table) | hunt (candidate only: try seeds until enough meet timing)"
+        type: string
+        default: compare
+      seed_count:
+        description: Fitter seeds per variant (seeds 1..N). 30 matches the SNES #462 precedent.
+        type: number
+        default: 30
+      seeds:
+        description: Explicit seed list, e.g. "1-8,13"; overrides seed_count.
+        type: string
+        default: ""
+      max_seeds:
+        description: "hunt: give up after this many seeds (seed_start .. seed_start+max_seeds-1)."
+        type: number
+        default: 100
+      min_met:
+        description: "hunt: stop once this many seeds meet timing (split across shards: each stops at ceil(min_met/shards))."
+        type: number
+        default: 1
+      seed_start:
+        description: "hunt: first seed; continue an earlier hunt from where it stopped."
+        type: number
+        default: 1
+      hunt_minutes:
+        description: "hunt: no new compile starts if it would run past this many minutes into the job."
+        type: number
+        default: 330
+      job_timeout_minutes:
+        description: Compile job timeout. GitHub-hosted jobs cap at 360; self-hosted may go far higher.
+        type: number
+        default: 360
+      compile_peak_gb:
+        description: RAM one compile needs, for per_job_concurrency=auto (SNES ~6.4; larger cores need more).
+        type: number
+        default: 7
+      project:
+        description: Quartus project; empty = the single *.qpf at the repo root (ignoring *_Q13).
+        type: string
+        default: ""
+      revision:
+        description: Quartus revision; empty = project.
+        type: string
+        default: ""
+      baseline_ref:
+        description: Branch, tag or SHA to compare against; empty = PR base branch, else the default branch.
+        type: string
+        default: ""
+      candidate_ref:
+        description: What to evaluate; empty = PR head, else the ref the workflow runs on.
+        type: string
+        default: ""
+      quartus_version:
+        description: "Quartus Lite version: 17.0.2 (MiSTer standard), 17.0, 17.1, 18.0, 18.1 or 19.1."
+        type: string
+        default: "17.0.2"
+      quartus_image:
+        description: Full Docker image override (pin by digest); empty = theypsilon/quartus-lite-c5 for quartus_version.
+        type: string
+        default: ""
+      shards:
+        description: Parallel compile jobs per variant; seeds are split round-robin.
+        type: number
+        default: 10
+      per_job_concurrency:
+        description: Compiles in flight inside one job; "auto" = from RAM (~7 GB each) and CPUs.
+        type: string
+        default: auto
+      threads_per_compile:
+        description: NUM_PARALLEL_PROCESSORS per compile, identical for both variants.
+        type: number
+        default: 4
+      watch_registers:
+        description: Newline-separated register globs for the new-logic path check, e.g. *ramimg*.
+        type: string
+        default: ""
+      worst_paths:
+        description: Worst setup and hold paths kept per corner per seed.
+        type: number
+        default: 40
+      thresholds:
+        description: Optional gating, flat YAML (see docs/METRICS.md). Empty = report only.
+        type: string
+        default: ""
+      keep_rbf:
+        description: "none | best (best + shipped seed of the candidate) | all"
+        type: string
+        default: best
+      override_seed:
+        description: "never | if-failing | always: commit the best seed to the .qsf (non-PR runs; PR runs via seedy-report)."
+        type: string
+        default: never
+      baseline_cache:
+        description: Reuse/store baseline results on the seedy-data branch.
+        type: boolean
+        default: true
+      runs_on:
+        description: JSON runner labels for the compile jobs, e.g. '["self-hosted","linux","quartus"]'.
+        type: string
+        default: '["ubuntu-latest"]'
+      light_runs_on:
+        description: JSON runner labels for the short plan/aggregate jobs.
+        type: string
+        default: '["ubuntu-latest"]'
+      compile_timeout:
+        description: Per-compile timeout (coreutils duration).
+        type: string
+        default: 4h
+      seedy_repo:
+        description: Where Seedy's scripts come from (keep in step with the version in the uses line).
+        type: string
+        default: mcfbytes/Seedy_MiSTer
+      seedy_ref:
+        description: Seedy version for the scripts (keep in step with the version in the uses line).
+        type: string
+        default: master
+    secrets:
+      dockerhub_username:
+        required: false
+      dockerhub_token:
+        required: false
+    outputs:
+      verdict:
+        value: ${{ jobs.aggregate.outputs.verdict }}
+      best_seed:
+        value: ${{ jobs.aggregate.outputs.best_seed }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: ${{ github.workspace }}/.seedy
+
+jobs:
+  plan:
+    runs-on: ${{ fromJSON(inputs.light_runs_on) }}
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix || steps.plan.outputs.matrix }}
+      seeds: ${{ steps.plan.outputs.seeds }}
+      variants: ${{ steps.refs.outputs.variants }}
+      mode: ${{ steps.refs.outputs.mode }}
+      image: ${{ steps.refs.outputs.image }}
+      cache_key: ${{ steps.plan.outputs.cache_key }}
+      cache_hit: ${{ steps.cache.outputs.hit }}
+      baseline_sha: ${{ steps.refs.outputs.baseline_sha }}
+      candidate_sha: ${{ steps.refs.outputs.candidate_sha }}
+      candidate_branch: ${{ steps.refs.outputs.candidate_branch }}
+      revision: ${{ steps.refs.outputs.revision }}
+      project: ${{ steps.refs.outputs.project }}
+      build_epoch: ${{ steps.refs.outputs.build_epoch }}
+    steps:
+      - name: Seedy scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.seedy_repo }}
+          ref: ${{ inputs.seedy_ref }}
+          path: .seedy
+          persist-credentials: false
+
+      - name: Core source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_ref || github.event.pull_request.head.sha || github.sha }}
+          path: core
+          # read-only token; kept so private repos can fetch the baseline ref and seedy-data
+          persist-credentials: true
+
+      - name: Refuse fork PRs on self-hosted runners
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        env:
+          RUNS_ON: ${{ inputs.runs_on }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          labels = json.loads(os.environ["RUNS_ON"])
+          labels = labels if isinstance(labels, list) else [labels]
+          if not all(isinstance(l, str) and l.startswith("ubuntu-") for l in labels):
+              sys.exit("Seedy: fork PRs run untrusted Tcl from the PR; they may only use GitHub-hosted "
+                       "ubuntu-* runners. Use workflow_dispatch from a trusted branch instead.")
+          PY
+
+      - name: Resolve refs, project and image
+        id: refs
+        working-directory: core
+        env:
+          IN_BASE: ${{ inputs.baseline_ref }}
+          IN_CAND: ${{ inputs.candidate_ref }}
+          PR_BASE: ${{ github.base_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          IN_PROJECT: ${{ inputs.project }}
+          IN_REVISION: ${{ inputs.revision }}
+          QV: ${{ inputs.quartus_version }}
+          MODE_IN: ${{ inputs.mode }}
+          IMAGE_OVERRIDE: ${{ inputs.quartus_image }}
+        run: |
+          set -euo pipefail
+          cand_sha=$(git rev-parse HEAD)
+          base_ref=${IN_BASE:-${PR_BASE:-$DEFAULT_BRANCH}}
+          git fetch --no-tags --quiet --depth=1 origin "$base_ref"
+          base_sha=$(git rev-parse FETCH_HEAD)
+          # the branch a seed override would be pushed to (dispatch/push runs only)
+          cand_branch=""
+          if [ "$EVENT" != pull_request ]; then
+            if [ -z "$IN_CAND" ] && [ "$REF_TYPE" = branch ]; then cand_branch=$REF_NAME
+            elif [ -n "$IN_CAND" ] && git ls-remote --exit-code --heads origin "$IN_CAND" >/dev/null; then cand_branch=$IN_CAND; fi
+          fi
+          eval "$(python3 -m seedy find-project . --project "$IN_PROJECT" --revision "$IN_REVISION")"
+          cand_seed=$shipped_seed
+          base_qsf=$(git show "$base_sha:$revision.qsf" 2>/dev/null || true)
+          base_seed=$(printf '%s' "$base_qsf" | python3 -c 'import sys; from seedy.quartus import read_seed; print(read_seed(sys.stdin.read()))')
+          # the build date is design content (CONF_STR); pin it to the baseline commit for both variants
+          build_epoch=$(git log -1 --format=%ct "$base_sha")
+          if [ "$MODE_IN" = hunt ]; then mode=hunt; variants=candidate
+          elif [ "$MODE_IN" != compare ]; then echo "::error::mode must be compare or hunt"; exit 1
+          elif [ "$EVENT" = push ] || [ "$base_sha" = "$cand_sha" ]; then mode=baseline-only; variants=baseline
+          else mode=compare; variants=baseline,candidate; fi
+          if [ -n "$IMAGE_OVERRIDE" ]; then image=$IMAGE_OVERRIDE; else
+            case "$QV" in
+              17.0.2) d=sha256:42e6c06da3af486f9cfea74acb5c1af9b63a77d0f16e3bf093215216e209b7ad;;
+              17.0)   d=sha256:69ddffb7c725f29593b352a4274d09d40464271115a0bab56c824ab716ff502f;;
+              17.1)   d=sha256:1fbeec2829bc5b156bd8c7d4fae993d5c7bf8238d21a184822fcb1dbf7132f58;;
+              18.0)   d=sha256:6a6639fe9da87a85cb27c4e8bc09e9e893fcc441bf8ba8ba0aa2ff3147151247;;
+              18.1)   d=sha256:2fb454763b79060799237d057e1e89ce24cd4dd34915ad0b5b4c59e36f985fc8;;
+              19.1)   d=sha256:c377c6d157c43e162403caed6f04e88ff4bcd9392d8ef0b111bb8e46892cda78;;
+              *) echo "::error::unknown quartus_version $QV; set quartus_image instead"; exit 1;;
+            esac
+            image="theypsilon/quartus-lite-c5:$QV@$d"
+          fi
+          {
+            echo "baseline_ref=$base_ref"; echo "baseline_sha=$base_sha"; echo "candidate_sha=$cand_sha"
+            echo "candidate_branch=$cand_branch"; echo "project=$project"; echo "revision=$revision"
+            echo "base_seed=$base_seed"; echo "cand_seed=$cand_seed"; echo "build_epoch=$build_epoch"
+            echo "mode=$mode"; echo "variants=$variants"; echo "image=$image"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Plan seeds and shards
+        id: plan
+        env:
+          SEEDS: ${{ inputs.seeds }}
+          COUNT: ${{ inputs.seed_count }}
+          SHARDS: ${{ inputs.shards }}
+          THREADS: ${{ inputs.threads_per_compile }}
+          MODE: ${{ steps.refs.outputs.mode }}
+          START: ${{ inputs.seed_start }}
+          MAX: ${{ inputs.max_seeds }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = hunt ]; then list="${SEEDS:-$START-$((START + MAX - 1))}"
+          # otherwise always measure the seed each variant's .qsf ships with
+          else list="${SEEDS:-1-$COUNT},${{ steps.refs.outputs.base_seed }},${{ steps.refs.outputs.cand_seed }}"; fi
+          python3 -m seedy plan --seeds "$list" --shards "$SHARDS" --variants "${{ steps.refs.outputs.variants }}" \
+            --project "${{ steps.refs.outputs.project }}" --revision "${{ steps.refs.outputs.revision }}" \
+            --baseline-sha "${{ steps.refs.outputs.baseline_sha }}" --image "${{ steps.refs.outputs.image }}" \
+            --threads "$THREADS" --build-epoch "${{ steps.refs.outputs.build_epoch }}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Baseline cache lookup
+        id: cache
+        working-directory: core
+        env:
+          KEY: ${{ steps.plan.outputs.cache_key }}
+          ENABLED: ${{ inputs.baseline_cache }}
+          MODE: ${{ steps.refs.outputs.mode }}
+        run: |
+          set -euo pipefail
+          hit=false
+          if [ "$ENABLED" = true ] && [ "$MODE" = compare ] && git fetch --quiet --depth=1 origin seedy-data 2>/dev/null; then
+            git cat-file -e "FETCH_HEAD:baselines/$KEY/records.json" 2>/dev/null && hit=true
+          fi
+          echo "hit=$hit" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Final matrix
+        id: matrix
+        if: steps.cache.outputs.hit == 'true'
+        run: |
+          python3 -m seedy plan --seeds "${{ steps.plan.outputs.seeds }}" --shards "${{ inputs.shards }}" \
+            --variants candidate | grep '^matrix=' >> "$GITHUB_OUTPUT"
+          echo "Baseline served from seedy-data (key ${{ steps.plan.outputs.cache_key }})" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run metadata
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          WATCH: ${{ inputs.watch_registers }}
+          THRESHOLDS: ${{ inputs.thresholds }}
+          POLICY: ${{ inputs.override_seed }}
+          KEEP_RBF: ${{ inputs.keep_rbf }}
+          THREADS: ${{ inputs.threads_per_compile }}
+          MIN_MET: ${{ inputs.min_met }}
+          EVENT: ${{ github.event_name }}
+          CAND_LABEL: ${{ github.event_name == 'pull_request' && 'this PR' || (inputs.candidate_ref || github.ref_name) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          R_PROJECT: ${{ steps.refs.outputs.project }}
+          R_REVISION: ${{ steps.refs.outputs.revision }}
+          R_BASE_REF: ${{ steps.refs.outputs.baseline_ref }}
+          R_BASE_SHA: ${{ steps.refs.outputs.baseline_sha }}
+          R_CAND_SHA: ${{ steps.refs.outputs.candidate_sha }}
+          R_BASE_SEED: ${{ steps.refs.outputs.base_seed }}
+          R_CAND_SEED: ${{ steps.refs.outputs.cand_seed }}
+          R_IMAGE: ${{ steps.refs.outputs.image }}
+          R_MODE: ${{ steps.refs.outputs.mode }}
+          R_EPOCH: ${{ steps.refs.outputs.build_epoch }}
+          P_SEEDS: ${{ steps.plan.outputs.seeds }}
+          P_KEY: ${{ steps.plan.outputs.cache_key }}
+          C_HIT: ${{ steps.cache.outputs.hit }}
+        run: |
+          mkdir -p plan
+          python3 - <<'PY'
+          import json, os
+          e = os.environ
+          meta = {
+            "project": e["R_PROJECT"], "revision": e["R_REVISION"],
+            "baseline": {"label": e["R_BASE_REF"], "sha": e["R_BASE_SHA"], "short": e["R_BASE_SHA"][:7]},
+            "candidate": {"label": e["CAND_LABEL"], "sha": e["R_CAND_SHA"], "short": e["R_CAND_SHA"][:7]},
+            "shipped_seed": {"baseline": int(e["R_BASE_SEED"]), "candidate": int(e["R_CAND_SEED"])},
+            "image": e["R_IMAGE"], "seeds": e["P_SEEDS"], "mode": e["R_MODE"], "cache_key": e["P_KEY"],
+            "baseline_cached": e["C_HIT"] == "true", "build_epoch": int(e["R_EPOCH"]), "threads": int(e["THREADS"]),
+            "watch_registers": [l.strip() for l in e["WATCH"].splitlines() if l.strip()],
+            "seed_policy": e["POLICY"], "keep_rbf": e["KEEP_RBF"], "min_met": int(e["MIN_MET"]),
+            "rbf_artifact": "seedy-rbf" if e["KEEP_RBF"] != "none" else "",
+            "run_url": e["RUN_URL"], "event": e["EVENT"],
+            "pr": {"number": int(e["PR_NUMBER"]) if e["PR_NUMBER"] else None,
+                   "head_repo": e["PR_HEAD_REPO"], "head_ref": e["PR_HEAD_REF"]},
+          }
+          json.dump(meta, open("plan/meta.json", "w"), indent=1)
+          open("plan/watch.txt", "w").write("\n".join(meta["watch_registers"]) + "\n")
+          open("plan/thresholds.yml", "w").write(e["THRESHOLDS"])
+          PY
+          cat plan/meta.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: seedy-plan
+          path: plan/
+          retention-days: 7
+
+  compile:
+    needs: plan
+    name: compile ${{ matrix.variant }} ${{ matrix.seeds }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.job_timeout_minutes }}
+    permissions:
+      contents: read   # PR code runs here: never give this job a write token
+    env:
+      DH_USER: ${{ secrets.dockerhub_username }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Free disk (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af >/dev/null || true
+          df -h /
+
+      - name: Check runner
+        run: |
+          command -v docker >/dev/null || { echo "::error::Seedy needs Docker on the runner"; exit 1; }
+          python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version' || { echo "::error::Seedy needs python3 >= 3.10"; exit 1; }
+          echo "CPUs $(nproc); $(grep MemAvailable /proc/meminfo)"
+
+      - name: Seedy scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.seedy_repo }}
+          ref: ${{ inputs.seedy_ref }}
+          path: .seedy
+          persist-credentials: false
+
+      - name: Source at ${{ matrix.variant }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.variant == 'baseline' && needs.plan.outputs.baseline_sha || needs.plan.outputs.candidate_sha }}
+          path: core
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: seedy-plan
+          path: plan
+
+      - name: Docker Hub login (optional, avoids anonymous pull limits)
+        if: env.DH_USER != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.dockerhub_username }}
+          password: ${{ secrets.dockerhub_token }}
+
+      - name: Pull Quartus image
+        run: docker pull --quiet "${{ needs.plan.outputs.image }}"
+
+      - name: Compile seeds ${{ matrix.seeds }}
+        env:
+          VARIANT: ${{ matrix.variant }}
+          SHARD: ${{ matrix.shard }}
+          SHA: ${{ matrix.variant == 'baseline' && needs.plan.outputs.baseline_sha || needs.plan.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          # git archive, not the working tree, so .gitattributes/line-ending drift can't differ
+          git -C core archive --format=tar HEAD -o "$RUNNER_TEMP/src.tar"
+          keep=none; [ "${{ inputs.keep_rbf }}" != none ] && keep=all
+          hunt=()
+          if [ "${{ needs.plan.outputs.mode }}" = hunt ]; then
+            shards=$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["include"]))' '${{ needs.plan.outputs.matrix }}')
+            hunt=(--stop-after-met $(( (${{ inputs.min_met }} + shards - 1) / shards )) --deadline $(( $(date +%s) + ${{ inputs.hunt_minutes }} * 60 )))
+          fi
+          .seedy/quartus/compile-shard.sh --src "$RUNNER_TEMP/src.tar" --variant "$VARIANT" --seeds "${{ matrix.seeds }}" \
+            --project "${{ needs.plan.outputs.project }}" --revision "${{ needs.plan.outputs.revision }}" \
+            --image "${{ needs.plan.outputs.image }}" --concurrency "${{ inputs.per_job_concurrency }}" \
+            --threads "${{ inputs.threads_per_compile }}" --npaths "${{ inputs.worst_paths }}" \
+            --watch-file plan/watch.txt --build-epoch "${{ needs.plan.outputs.build_epoch }}" --keep-rbf "$keep" \
+            --timeout "${{ inputs.compile_timeout }}" --work "$RUNNER_TEMP/work" --out "$RUNNER_TEMP/out" \
+            --name "seedy-${{ github.run_id }}-${{ github.run_attempt }}-$VARIANT-$SHARD" \
+            --peak-gb "${{ inputs.compile_peak_gb }}" "${hunt[@]}" \
+            --meta "{\"sha\": \"$SHA\", \"runner\": \"${{ runner.name }}\", \"runner_environment\": \"${{ runner.environment }}\"}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: seedy-shard-${{ matrix.variant }}-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/out/records/
+            ${{ runner.temp }}/out/logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: inputs.keep_rbf != 'none'
+        with:
+          name: seedy-rbfshard-${{ matrix.variant }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out/rbf/
+          retention-days: 1
+          if-no-files-found: ignore
+          compression-level: 0
+
+  aggregate:
+    needs: [plan, compile]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ${{ fromJSON(inputs.light_runs_on) }}
+    outputs:
+      verdict: ${{ steps.render.outputs.verdict }}
+      best_seed: ${{ steps.render.outputs.best_seed }}
+      apply_seed: ${{ steps.render.outputs.apply_seed }}
+    steps:
+      - name: Seedy scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.seedy_repo }}
+          ref: ${{ inputs.seedy_ref }}
+          path: .seedy
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: seedy-plan
+          path: plan
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: seedy-shard-*
+          path: shards
+
+      - name: Cached baseline checkout
+        if: needs.plan.outputs.cache_hit == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: seedy-data
+          path: seedy-data
+          persist-credentials: false
+
+      - name: Cached baseline
+        if: needs.plan.outputs.cache_hit == 'true'
+        run: |
+          mkdir -p shards/cached-baseline
+          cp "seedy-data/baselines/${{ needs.plan.outputs.cache_key }}/records.json" shards/cached-baseline/baseline.json
+
+      - name: Aggregate (fails on any missing seed, except seeds a hunt never started)
+        run: |
+          partial=(); [ "${{ needs.plan.outputs.mode }}" = hunt ] && partial=(--allow-partial)
+          python3 -m seedy aggregate shards --seeds "${{ needs.plan.outputs.seeds }}" "${partial[@]}" \
+            --variants "${{ needs.plan.outputs.variants }}" --meta plan/meta.json --out results/merged.json
+
+      - name: Compare and render
+        id: render
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.plan.outputs.mode }}" = compare ]; then
+            python3 -m seedy render results/merged.json --out-dir results --thresholds plan/thresholds.yml \
+              --seed-policy "${{ inputs.override_seed }}" --run-url "$RUN_URL" | tee -a "$GITHUB_OUTPUT"
+            cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            python3 -m seedy render-single results/merged.json --out-dir results --run-url "$RUN_URL" \
+              --seed-policy "${{ inputs.override_seed }}" --status-dir shards | tee -a "$GITHUB_OUTPUT"
+            cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          cp plan/meta.json results/meta.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: seedy-results
+          path: results/
+          retention-days: 90
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: inputs.keep_rbf != 'none'
+        with:
+          pattern: seedy-rbfshard-*
+          path: rbf-all
+          merge-multiple: true
+
+      - name: Pick bitstreams
+        if: inputs.keep_rbf != 'none'
+        run: |
+          set -euo pipefail
+          mkdir -p rbf
+          p="${{ needs.plan.outputs.project }}"
+          if [ "${{ inputs.keep_rbf }}" = all ]; then cp rbf-all/*.rbf rbf/ 2>/dev/null || true
+          else
+            v=candidate; [ "${{ needs.plan.outputs.mode }}" = baseline-only ] && v=baseline
+            for s in "${{ steps.render.outputs.best_seed }}" "$(python3 -c 'import json; m=json.load(open("plan/meta.json")); print(m["shipped_seed"]["'$v'"])')"; do
+              [ -n "$s" ] && cp "rbf-all/$p-$v-seed$s.rbf" rbf/ 2>/dev/null || true
+            done
+          fi
+          ls -la rbf
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: inputs.keep_rbf != 'none'
+        with:
+          name: seedy-rbf
+          path: rbf/
+          retention-days: 14
+          if-no-files-found: ignore
+          compression-level: 0
+
+      - name: Thresholds
+        if: steps.render.outputs.thresholds_failed == 'true'
+        run: |
+          echo "::error::Seedy thresholds failed; see the summary"
+          exit 1
+
+  store-baseline:
+    # trusted events only: a PR run must never write the shared baseline
+    needs: [plan, aggregate]
+    if: >-
+      ${{ !cancelled() && needs.aggregate.result == 'success' && inputs.baseline_cache &&
+          github.event_name != 'pull_request' && needs.plan.outputs.cache_hit != 'true' &&
+          needs.plan.outputs.mode != 'hunt' }}
+    runs-on: ${{ fromJSON(inputs.light_runs_on) }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: seedy-results
+          path: results
+      - name: Commit baseline to seedy-data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ needs.plan.outputs.cache_key }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          m = json.load(open("results/merged.json"))
+          base = [r for r in m["records"] if r["variant"] == "baseline"]
+          if any(r.get("status") != "ok" for r in base):
+              print("baseline has failed compiles; storing anyway, they are data")
+          os.makedirs("store", exist_ok=True)
+          json.dump(base, open("store/records.json", "w"))
+          meta = {k: m["meta"].get(k) for k in ("project", "revision", "baseline", "image", "seeds", "threads",
+                                                 "build_epoch", "quartus_version", "run_url", "cache_key")}
+          json.dump(meta, open("store/meta.json", "w"), indent=1)
+          PY
+          git init -q data && cd data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          remote="https://x-access-token:${GH_TOKEN}@${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}.git"
+          for attempt in 1 2 3; do
+            if git fetch -q --depth=1 "$remote" seedy-data 2>/dev/null; then git checkout -q -B seedy-data FETCH_HEAD
+            else git checkout -q --orphan seedy-data; git rm -rqf . 2>/dev/null || true
+              printf '# seedy-data\n\nBaseline results cached by MiSTer Seedy. Written only by trusted runs.\n' > README.md; git add README.md; fi
+            mkdir -p "baselines/$KEY"; cp ../store/*.json "baselines/$KEY/"
+            git add "baselines/$KEY"
+            git diff --cached --quiet && { echo "already stored"; exit 0; }
+            git commit -qm "Seedy baseline ${{ needs.plan.outputs.baseline_sha }} ($KEY)"
+            git push -q "$remote" HEAD:refs/heads/seedy-data && exit 0
+            echo "push raced, retrying"; sleep $((attempt * 5))
+          done
+          exit 1
+
+  apply-seed:
+    # non-PR runs (workflow_dispatch). PR runs commit the seed from seedy-report instead.
+    needs: [plan, aggregate]
+    if: >-
+      ${{ !cancelled() && needs.aggregate.outputs.apply_seed == 'true' && github.event_name != 'pull_request' &&
+          needs.plan.outputs.candidate_branch != '' }}
+    runs-on: ${{ fromJSON(inputs.light_runs_on) }}
+    permissions:
+      contents: write
+    steps:
+      - name: Seedy scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.seedy_repo }}
+          ref: ${{ inputs.seedy_ref }}
+          path: .seedy
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.candidate_branch }}
+          path: core
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: seedy-results
+          path: results
+      - name: Commit the best seed
+        working-directory: core
+        env:
+          WANT: ${{ needs.plan.outputs.candidate_sha }}
+          REV: ${{ needs.plan.outputs.revision }}
+          BRANCH: ${{ needs.plan.outputs.candidate_branch }}
+          POLICY: ${{ inputs.override_seed }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$WANT" ]; then
+            echo "::warning::$BRANCH moved since the run started; not committing a seed measured on $WANT"; exit 0
+          fi
+          python3 -m seedy decide ../results/best-seed.json --policy "$POLICY" | tee ../decision.txt
+          apply=$(sed -n 's/^apply=//p' ../decision.txt); best_seed=$(sed -n 's/^best_seed=//p' ../decision.txt)
+          [ "$apply" = true ] || { echo "not applying: $(sed -n 's/^reason=//p' ../decision.txt)"; exit 0; }
+          python3 -m seedy apply-seed "$REV.qsf" --seed "$best_seed"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "Use fitter seed $best_seed (Seedy)" -m "$(python3 -c 'import json; d=json.load(open("../results/best-seed.json")); print(d["best_why"])')" \
+            -m "Measured by ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push origin "HEAD:$BRANCH"
+          echo "Committed SEED $best_seed to $BRANCH" >> "$GITHUB_STEP_SUMMARY"

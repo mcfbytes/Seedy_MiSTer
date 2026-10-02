@@ -1,0 +1,20 @@
+# Copy to .github/workflows/seedy-report.yml in your core repo. It posts Seedy's PR comment
+# (also for PRs from forks) and, if enabled, commits the best seed to same-repo PR branches.
+# workflow_run workflows only run from the default branch, so merge this file before testing it.
+name: Seedy report
+
+on:
+  workflow_run:
+    workflows: [Seedy]
+    types: [completed]
+
+permissions:
+  actions: read
+  pull-requests: write
+  contents: write
+
+jobs:
+  report:
+    uses: mcfbytes/Seedy_MiSTer/.github/workflows/seedy-report.yml@master
+    with:
+      override_seed: never   # never | if-failing | always (PR runs)

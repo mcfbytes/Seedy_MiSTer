@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+art-src/out-scratch/
+MiSTer_Seedy-spec.md

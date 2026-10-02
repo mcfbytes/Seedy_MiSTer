@@ -1,0 +1,17 @@
+f(MAX) Summary
+Exploration Point,FPGA_CLK1_50,FPGA_CLK2_50,altera_reserved_tck,emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter[0].output_counter|divclk,emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter[1].output_counter|divclk,emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter[2].output_counter|divclk,pll_audio|pll_audio_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk,pll_hdmi|pll_hdmi_inst|altera_pll_i|cyclonev_pll|counter[0].output_counter|divclk,spi_sck,sysmem|fpga_interfaces|clocks_resets|h2f_user0_clk,f(MAX) Geomean
+dse1_SNES_1,86.15 MHz,65.9 MHz,54.78 MHz,86.13 MHz,70.26 MHz,26.21 MHz,38.14 MHz,153.3 MHz,179.21 MHz,172.12 MHz,78.509 MHz
+dse1_SNES_2,84.44 MHz,66.93 MHz,50.98 MHz,86.02 MHz,69.68 MHz,26.86 MHz,37.72 MHz,155.16 MHz,256.41 MHz,176.99 MHz,81.108 MHz
+dse1_SNES_3,81.76 MHz,69.51 MHz,69.96 MHz,87.55 MHz,68.53 MHz,25.8 MHz,36.62 MHz,147.3 MHz,214.22 MHz,118.54 MHz,78.088 MHz
+dse1_SNES_4,76.37 MHz,66.17 MHz,61.17 MHz,87.28 MHz,64.35 MHz,25.93 MHz,37.65 MHz,154.01 MHz,252.27 MHz,125.72 MHz,77.947 MHz
+dse1_SNES_5,86.23 MHz,66.03 MHz,62.13 MHz,87.4 MHz,66.4 MHz,26.32 MHz,37.14 MHz,145.01 MHz,247.22 MHz,155.67 MHz,80.338 MHz
+dse1_SNES_6,82.33 MHz,68.95 MHz,57.19 MHz,87.23 MHz,70.45 MHz,26.83 MHz,38.28 MHz,151.52 MHz,220.56 MHz,167.03 MHz,80.507 MHz
+dse1_SNES_7,78.13 MHz,66.71 MHz,74.9 MHz,87.33 MHz,68.81 MHz,25.58 MHz,38.3 MHz,156.15 MHz,240.27 MHz,122.2 MHz,79.849 MHz
+dse1_SNES_8,75.13 MHz,66.86 MHz,53.74 MHz,81.89 MHz,70.95 MHz,24.92 MHz,38.3 MHz,158.83 MHz,181.88 MHz,169.38 MHz,76.998 MHz
+dse1_SNES_9,78.45 MHz,67.45 MHz,73.63 MHz,85.79 MHz,70.57 MHz,25.57 MHz,36.96 MHz,154.08 MHz,203.42 MHz,145.71 MHz,79.575 MHz
+dse1_SNES_10,75.77 MHz,68.02 MHz,66.8 MHz,84.07 MHz,69.74 MHz,26.23 MHz,37.02 MHz,153.16 MHz,210.7 MHz,174.89 MHz,80.239 MHz
+dse1_SNES_11,76.03 MHz,67.71 MHz,54.67 MHz,85.57 MHz,65.1 MHz,24.59 MHz,38.25 MHz,147.62 MHz,218.44 MHz,129.27 MHz,75.660 MHz
+dse1_SNES_12,83.04 MHz,66.13 MHz,55.74 MHz,85.91 MHz,66.07 MHz,25.94 MHz,37.67 MHz,150.53 MHz,214.78 MHz,168.44 MHz,78.812 MHz
+dse1_SNES_13,77.83 MHz,67.96 MHz,56.15 MHz,87.8 MHz,68.09 MHz,26.09 MHz,37.73 MHz,153.26 MHz,163.21 MHz,120.09 MHz,74.476 MHz
+dse1_SNES_14,83.1 MHz,64.59 MHz,72.03 MHz,87.02 MHz,62.92 MHz,25.54 MHz,37.32 MHz,145.84 MHz,242.19 MHz,120.51 MHz,78.233 MHz
+dse1_SNES_15,76.91 MHz,65.23 MHz,60.54 MHz,76.83 MHz,68.03 MHz,25.69 MHz,37.44 MHz,151.31 MHz,255.1 MHz,118.06 MHz,76.603 MHz

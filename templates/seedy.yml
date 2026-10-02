@@ -1,0 +1,76 @@
+# Copy to .github/workflows/seedy.yml in your core repo (with templates/seedy-report.yml).
+# PR runs: add the "seedy" label to a PR. Manual runs: Actions tab -> Seedy -> Run workflow.
+name: Seedy
+
+on:
+  pull_request:
+    types: [labeled, synchronize]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "compare: this branch vs baseline (the #462 table). hunt: try seeds until some meet timing."
+        type: choice
+        options: [compare, hunt]
+        default: compare
+      seed_count:
+        description: "compare: fitter seeds per variant (seeds 1..N)"
+        default: "30"
+      max_seeds:
+        description: "hunt: give up after this many seeds"
+        default: "100"
+      min_met:
+        description: "hunt: stop once this many seeds meet timing"
+        default: "1"
+      seed_start:
+        description: "hunt: first seed (continue an earlier hunt)"
+        default: "1"
+      baseline_ref:
+        description: "compare: branch/tag/SHA to compare against (empty = default branch)"
+        default: ""
+      quartus_version:
+        description: Quartus Lite version (17.0.2 is the MiSTer standard)
+        type: choice
+        options: ["17.0.2", "17.0", "17.1", "18.0", "18.1", "19.1"]
+        default: "17.0.2"
+      override_seed:
+        description: Commit the best seed to this branch's .qsf
+        type: choice
+        options: [never, if-failing, always]
+        default: never
+  # Optional: keep the master baseline warm so PR runs compile only the PR.
+  # push:
+  #   branches: [master]
+
+concurrency:
+  group: seedy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  seedy:
+    # PRs: only when labelled "seedy"; a different label being added must not restart a run
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'seedy') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'seedy'))
+    uses: mcfbytes/Seedy_MiSTer/.github/workflows/seedy.yml@master
+    permissions:
+      contents: write   # seedy-data baseline cache and seed commits on manual runs; fork PRs get read-only anyway
+      actions: read
+    with:
+      mode: ${{ inputs.mode || 'compare' }}
+      seed_count: ${{ fromJSON(inputs.seed_count || '30') }}
+      max_seeds: ${{ fromJSON(inputs.max_seeds || '100') }}
+      min_met: ${{ fromJSON(inputs.min_met || '1') }}
+      seed_start: ${{ fromJSON(inputs.seed_start || '1') }}
+      baseline_ref: ${{ inputs.baseline_ref }}
+      quartus_version: ${{ inputs.quartus_version || '17.0.2' }}
+      override_seed: ${{ inputs.override_seed || 'never' }}
+      # watch_registers: |
+      #   *ramimg*
+      # Self-hosted (see README): runs_on: '["self-hosted", "linux", "quartus"]'
+    # secrets:
+    #   dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+    #   dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
