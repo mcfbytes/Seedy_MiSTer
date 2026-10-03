@@ -4,7 +4,8 @@ import re
 
 from seedy import parse
 
-HEADLINE = ("qof", "fmax_geomean", "setup", "hold", "recovery", "removal", "alms", "compile_s", "timing_met")
+HEADLINE = ("qof", "fmax_geomean", "setup", "hold", "recovery", "removal", "tns", "alms", "compile_s", "timing_met")
+_CORNER_RE = re.compile(r"slow_\d+mv_(-?\d+)c", re.I)
 
 
 def _worst(clocks, kind):
@@ -27,11 +28,47 @@ def headline_from(clocks, fmax, util, flow):
         "hold": _worst(clocks, "hold"),
         "recovery": _worst(clocks, "recovery"),
         "removal": _worst(clocks, "removal"),
+        "tns": _tns(clocks),
         "alms": util.get("alms"),
         "compile_s": flow.get("total_s"),
     }
     h["timing_met"] = timing_met(h)
     return h
+
+
+def _tns(clocks):
+    """Total negative setup slack: per clock the worst corner's TNS, summed over clocks (0 = no failing path)."""
+    per = {}
+    for c in clocks:
+        if c["kind"] == "setup" and c.get("tns") is not None:
+            per[c["clock"]] = min(c["tns"], per.get(c["clock"], c["tns"]))
+    return sum(min(0.0, v) for v in per.values()) if per else None
+
+
+def reported_corners(corners, multicorner):
+    """The corners the core's own Quartus timing report covers. MiSTer's Template.qsf sets
+    TIMEQUEST_MULTICORNER_ANALYSIS Off, which reports only the slow model at the hottest junction
+    temperature (7_slow_1100mv_100c); Quartus's default (On) reports every corner."""
+    if multicorner is not False:
+        return list(corners)
+    slow = [(int(m.group(1)), c) for c in corners for m in [_CORNER_RE.search(c)] if m]
+    return [max(slow)[1]] if slow else list(corners)
+
+
+def apply_corners(rec, multicorner):
+    """Set the headline to what the core's own report shows; keep the all-corner view as headline_all."""
+    corners = sorted({c["corner"] for c in rec.get("clocks", [])})
+    rep = reported_corners(corners, multicorner)
+    rec["multicorner"] = multicorner
+    rec["reported_corners"] = rep
+    util = rec.get("utilization", {})
+    flow = {"total_s": (rec.get("runtime_s") or {}).get("Total")}
+    rec["headline_all"] = headline_from(rec.get("clocks", []), rec.get("fmax", []), util, flow)
+    rec["headline"] = headline_from([c for c in rec.get("clocks", []) if c["corner"] in rep],
+                                    rec.get("fmax", []), util, flow)
+    if "derived" in rec:
+        rec["derived"] = derive_paths(rec)
+    return rec
 
 
 def timing_met(h):
@@ -49,6 +86,7 @@ def from_compile_dir(d, revision, *, seed, variant, meta=None):
     sta_sum = parse.read_text(os.path.join(out, revision + ".sta.summary"))
     flow = parse.read_text(os.path.join(out, revision + ".flow.rpt"))
     tsv = parse.read_text(os.path.join(d, "sta.tsv"))
+    sta_rpt = parse.read_text(os.path.join(out, revision + ".sta.rpt"))
     rec = {"seed": int(seed), "variant": variant, "source": "compile", **(meta or {})}
     rc = parse.read_text(os.path.join(d, "compile.rc"))
     if rc is not None and rc.strip() not in ("0", ""):
@@ -71,11 +109,16 @@ def from_compile_dir(d, revision, *, seed, variant, meta=None):
         "status": "ok",
         "quartus_version": util.pop("quartus_version"),
         "headline": headline_from(sta["clocks"], sta["fmax"], util, flowd),
+        "settings": flowd.get("settings", {}),
+        "constraints": parse.sta_rpt(sta_rpt) if sta_rpt else None,
         "utilization": util,
         "runtime_s": flowd["runtime_s"],
         "peak_mem_mb": flowd["peak_mem_mb"],
         **{k: sta[k] for k in ("corners", "clocks", "fmax", "paths", "watch", "nowatch")},
     })
+    if sta["corners"]:
+        mc = flowd.get("settings", {}).get("TIMEQUEST_MULTICORNER_ANALYSIS")
+        apply_corners(rec, None if flow is None else (mc or "On").lower() != "off")
     rec["derived"] = derive_paths(rec)
     return rec
 
@@ -98,8 +141,9 @@ def short_node(node, parts=2):
 
 def derive_paths(rec):
     failing = {}
+    rep = set(rec.get("reported_corners") or [])
     for p in rec.get("paths", []):
-        if p["slack"] is not None and p["slack"] < 0:
+        if p["slack"] is not None and p["slack"] < 0 and (not rep or p["corner"] in rep):
             fam = endpoint_family(p["to"])
             failing[fam] = failing.get(fam, 0) + 1
     watch = rec.get("watch", [])

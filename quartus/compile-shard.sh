@@ -6,7 +6,7 @@
 #
 # Options (defaults in brackets): --project/--revision [auto] --image [theypsilon/quartus-lite-c5:17.0.2]
 #   --concurrency [auto] --threads [4] --npaths [40] --watch-file [none] --build-epoch [ref tar mtime]
-#   --keep-rbf none|all [none] --work [$RUNNER_TEMP/seedy-work, else next to --out] --name [seedy-<variant>]
+#   --keep-rbf none|all [none] --keep-reports yes|no [no] --work [$RUNNER_TEMP/seedy-work, else next to --out] --name [seedy-<variant>]
 #   --peak-gb [7, RAM per compile for --concurrency auto] --timeout [4h per compile] --meta '<json merged into every record>'
 # Hunt mode (hard-to-close cores): seeds are tried in the order given, and no new seed starts once
 #   --stop-after-met K   K seeds of this shard have met timing, or
@@ -18,14 +18,14 @@ ROOT="$(dirname "$HERE")"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 SRC= VARIANT= SEEDS= OUT= PROJECT= REVISION= IMAGE=theypsilon/quartus-lite-c5:17.0.2
-CONC=auto THREADS=4 NPATHS=40 WATCH= EPOCH= KEEP_RBF=none NAME= TIMEOUT=4h META='{}' STOP_MET=0 DEADLINE=0 PEAK_GB=7
+CONC=auto THREADS=4 NPATHS=40 WATCH= EPOCH= KEEP_RBF=none KEEP_REPORTS=no NAME= TIMEOUT=4h META='{}' STOP_MET=0 DEADLINE=0 PEAK_GB=7
 WORK=
 while [ $# -gt 0 ]; do
   case "$1" in
     --src) SRC=$2;; --variant) VARIANT=$2;; --seeds) SEEDS=$2;; --out) OUT=$2;;
     --project) PROJECT=$2;; --revision) REVISION=$2;; --image) IMAGE=$2;;
     --concurrency) CONC=$2;; --threads) THREADS=$2;; --npaths) NPATHS=$2;;
-    --watch-file) WATCH=$2;; --build-epoch) EPOCH=$2;; --keep-rbf) KEEP_RBF=$2;;
+    --watch-file) WATCH=$2;; --build-epoch) EPOCH=$2;; --keep-rbf) KEEP_RBF=$2;; --keep-reports) KEEP_REPORTS=$2;;
     --work) WORK=$2;; --name) NAME=$2;; --timeout) TIMEOUT=$2;; --meta) META=$2;;
     --stop-after-met) STOP_MET=$2;; --deadline) DEADLINE=$2;; --peak-gb) PEAK_GB=$2;;
     *) echo "unknown option $1" >&2; exit 2;;
@@ -81,6 +81,19 @@ run_seed() {
     --log "$log" --out "$rec.tmp"
   mv "$rec.tmp" "$rec"
   for f in compile.log sta.log; do [ -f "$d/$f" ] && tail -c 20000 "$d/$f" > "$OUT/logs/$VARIANT-$seed-$f" || true; done
+  if [ "$KEEP_REPORTS" = yes ]; then
+    # full logs and every Quartus text report, so a run can be re-examined (or re-parsed) later;
+    # text compresses ~20x with xz. Best effort: a failure here never fails the compile.
+    mkdir -p "$OUT/reports"
+    local files=() z=J ext=xz
+    command -v xz >/dev/null || { z=z; ext=gz; }
+    while IFS= read -r f; do files+=("$f"); done < <(cd "$d" && find . -maxdepth 2 -type f \
+      \( -name '*.log' -o -name 'sta.tsv' -o -name 'compile.rc' -o -name 'mem.peak' \
+         -o -path './output_files/*' \( -name '*.rpt' -o -name '*.summary' -o -name '*.smsg' -o -name '*.pin' \) \) | sort)
+    [ ${#files[@]} -gt 0 ] && XZ_OPT=-6 tar -c${z}f "$OUT/reports/$PROJECT-$VARIANT-seed$seed.tar.$ext" -C "$d" \
+      --transform "s,^\./,$VARIANT-seed$seed/," -- "${files[@]}" \
+      || echo "seedy: warning: could not archive the reports of $VARIANT seed $seed" >&2
+  fi
   if [ "$KEEP_RBF" = all ] && [ -f "$d/output_files/$REVISION.rbf" ]; then
     mkdir -p "$OUT/rbf"; cp "$d/output_files/$REVISION.rbf" "$OUT/rbf/$PROJECT-$VARIANT-seed$seed.rbf"
   fi

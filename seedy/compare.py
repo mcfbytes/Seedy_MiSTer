@@ -3,6 +3,7 @@ import re
 import statistics
 
 from seedy import seedpick, stats
+from seedy.records import short_node
 
 # key, label, unit, which direction is better
 METRICS = [
@@ -12,6 +13,7 @@ METRICS = [
     ("hold", "WC slack: hold", "ns", "higher"),
     ("recovery", "WC slack: recovery", "ns", "higher"),
     ("removal", "WC slack: removal", "ns", "higher"),
+    ("tns", "Total negative setup slack", "ns", "higher"),
     ("alms", "Logic utilization", "ALMs", "lower"),
     ("compile_s", "Compilation time", "s", "lower"),
 ]
@@ -19,7 +21,10 @@ ALPHA = 0.05
 SLACK_KEYS = ("setup", "hold", "recovery", "removal")
 # A slack shift only matters for closure if some seed gets near zero; recovery dropping from
 # +3.8 to +3.6 ns is a real shift but not a timing risk. Override with the slack_margin_ns threshold.
+# Reviewers never discuss recovery/removal (async reset timing) unless it actually fails, so those
+# two flag only when some seed goes negative.
 SLACK_MARGIN_NS = 0.5
+RESET_KEYS = ("recovery", "removal")
 
 
 def short_clock(name):
@@ -104,12 +109,17 @@ def compare(merged, thresholds=None, seed_policy="off"):
              "base": stats.describe(x), "cand": stats.describe(y),
              "diff_mean": diff, "p": p, "diff_median": md, "ci": [lo, hi], "worse": worse,
              "flag": bool(worse and p is not None and p < ALPHA and key not in ("compile_s", "qof"))}
-        if m["flag"] and key in SLACK_KEYS and m["cand"]["min"] is not None and m["cand"]["min"] >= margin:
+        km = 0.0 if key in RESET_KEYS else margin
+        if m["flag"] and key in SLACK_KEYS and m["cand"]["min"] is not None and m["cand"]["min"] >= km:
             m["flag"] = False
-            m["note"] = f"significant shift, but every seed keeps >= {margin:g} ns of {key} slack"
+            m["note"] = (f"significant shift, but every seed keeps >= {km:g} ns of {key} slack" if km
+                         else f"significant shift, but no seed fails {key}")
         res["metrics"].append(m)
         if m["flag"]:
-            res["reasons"].append(f"{label} worse by {abs(diff):.3f} {unit} on average (p = {p:.3f})".replace("  ", " "))
+            why = f"{label} worse by {abs(diff):.3f} {unit} on average (p = {p:.3f})".replace("  ", " ")
+            if key in SLACK_KEYS and m["cand"]["min"] is not None:
+                why += f"; worst seed {m['cand']['min']:+.3f} ns".replace("-", "−")
+            res["reasons"].append(why)
 
     bm = sorted(r["seed"] for r in base if r["headline"].get("timing_met"))
     cm = sorted(r["seed"] for r in cand if r["headline"].get("timing_met"))
@@ -117,6 +127,21 @@ def compare(merged, thresholds=None, seed_policy="off"):
     res["met"] = {"base": bm, "cand": cm, "base_n": len(base), "cand_n": len(cand), "p": pm}
     if pm is not None and pm < ALPHA and len(cm) / max(1, len(cand)) < len(bm) / max(1, len(base)):
         res["reasons"].append(f"fewer seeds meet timing ({len(cm)}/{len(cand)} vs {len(bm)}/{len(base)}, Fisher p = {pm:.3f})")
+
+    def neg_hold(recs):
+        return sum(r["headline"].get("hold") is not None and r["headline"]["hold"] < 0 for r in recs)
+    nb, nc = neg_hold(base), neg_hold(cand)
+    ph = stats.fisher_exact(nc, len(cand) - nc, nb, len(base) - nb) if base and cand else None
+    res["hold_neg"] = {"base": nb, "cand": nc, "p": ph}
+    if ph is not None and ph < ALPHA and nc / max(1, len(cand)) > nb / max(1, len(base)):
+        res["reasons"].append(f"more seeds with a hold violation ({nc}/{len(cand)} vs {nb}/{len(base)}, Fisher p = {ph:.3f})")
+
+    # hold failures at corners the core's own report leaves out (Template.qsf: multicorner off)
+    def hidden(recs):
+        return sorted(r["seed"] for r in recs if r.get("headline_all") and
+                      (r["headline_all"].get("hold") or 0) < 0 <= (r["headline"].get("hold") or 0))
+    res["hidden_hold"] = {"base": hidden(base), "cand": hidden(cand),
+                          "corners": sorted({c for r in base + cand for c in r.get("reported_corners") or []})}
 
     res["clocks_setup"] = clock_table(base, cand, "setup")
     res["clocks_hold"] = clock_table(base, cand, "hold")
@@ -127,11 +152,19 @@ def compare(merged, thresholds=None, seed_policy="off"):
 
     be, ce = endpoint_seeds(base), endpoint_seeds(cand)
     paths_known = any(r.get("paths") for r in base) and any(r.get("paths") for r in cand)
+    cand_only = {k: v for k, v in ce.items() if k not in be}
+    # an endpoint failing on 1-2 of 30 seeds is placement noise (any seed can fail anywhere near the
+    # critical paths); only a new failure that recurs often enough to be significant is a flag
+    recurring = {k: v for k, v in cand_only.items()
+                 if stats.fisher_exact(v, len(cand) - v, 0, len(base)) < ALPHA}
     res["endpoints"] = {"known": paths_known, "base": be, "cand": ce,
-                        "cand_only": {k: v for k, v in ce.items() if k not in be}}
-    if paths_known:
-        for fam, n in sorted(res["endpoints"]["cand_only"].items(), key=lambda kv: -kv[1]):
-            res["reasons"].append(f"new failing endpoint family {fam} ({n} seeds)")
+                        "cand_only": cand_only, "cand_only_recurring": recurring}
+    if paths_known and recurring:
+        res["reasons"].append("new failing endpoints: " + ", ".join(
+            f"`{short_node(k, 3)}` ({v}/{len(cand)} seeds)" for k, v in sorted(recurring.items(), key=lambda kv: -kv[1])))
+
+    res["constraints"] = constraint_diff(base, cand)
+    res["review"] = review_flags(meta, base, cand) + constraint_flags(res["constraints"])
 
     res["watched"] = watched_summary(cand)
     if res["watched"]:
@@ -152,6 +185,88 @@ def compare(merged, thresholds=None, seed_policy="off"):
     return res
 
 
+def review_flags(meta, base, cand):
+    """Changes MiSTer maintainers object to on sight, whatever the statistics say: a new clock (it can
+    hide real problems by making paths asynchronous), edits to the shared sys/ framework, constraint
+    (.sdc) and project (.qsf) edits, and a changed fitter SEED."""
+    out = []
+    bc = {c["clock"] for r in base for c in r.get("clocks", [])}
+    cc = {c["clock"] for r in cand for c in r.get("clocks", [])}
+    if bc and cc:
+        new, gone = sorted(cc - bc, key=short_clock), sorted(bc - cc, key=short_clock)
+        if new:
+            out.append("adds clock(s) " + ", ".join(f"`{short_clock(c)}`" for c in new)
+                       + ": a new clock makes its paths asynchronous to the rest, which can improve slack by hiding real problems")
+        if gone:
+            out.append("removes clock(s) " + ", ".join(f"`{short_clock(c)}`" for c in gone))
+    seeds = meta.get("shipped_seed") or {}
+    if seeds.get("baseline") is not None and seeds.get("candidate") is not None and seeds["baseline"] != seeds["candidate"]:
+        out.append(f"changes the `.qsf` SEED ({seeds['baseline']} → {seeds['candidate']}); maintainers pick the release seed themselves")
+    paths = meta.get("changed_paths") or []
+    groups = (("edits the shared `sys/` framework", lambda p: p.startswith("sys/")),
+              ("edits timing constraints (`.sdc`)", lambda p: p.lower().endswith(".sdc")),
+              ("edits the project settings (`.qsf`)", lambda p: p.lower().endswith(".qsf")))
+    for text, match in groups:
+        hit = [p for p in paths if match(p)]
+        if hit:
+            shown = ", ".join(f"`{p}`" for p in hit[:5]) + (f" and {len(hit) - 5} more" if len(hit) > 5 else "")
+            out.append(f"{text}: {shown}")
+    return out
+
+
+def constraint_summary(recs):
+    """Union over seeds (synthesis, and so the constraint picture, barely depends on the fitter seed)."""
+    cs = [r["constraints"] for r in recs if r.get("constraints")]
+    if not cs:
+        return None
+    def union(k):
+        return sorted({x for c in cs for x in c.get(k, [])})
+    def most(k):
+        v = [c["unconstrained"].get(k) for c in cs if c.get("unconstrained", {}).get(k) is not None]
+        return max(v) if v else None
+    bad_sdc = sorted({f"{f} ({st})" for c in cs for f, st in c.get("sdc_files", {}).items() if st.upper() != "OK"})
+    return {"clocks": union("unconstrained_clocks"), "ignored": union("ignored"), "ports": union("unconstrained_ports"),
+            "latch_loops": max(c.get("latch_loops", 0) for c in cs), "bad_sdc": bad_sdc,
+            "input_paths": most("input_paths"), "output_paths": most("output_paths")}
+
+
+def constraint_diff(base, cand):
+    b, c = constraint_summary(base), constraint_summary(cand)
+    out = {"known": bool(b and c), "base": b, "cand": c}
+    if out["known"]:
+        for k in ("clocks", "ignored", "ports", "bad_sdc"):
+            out["new_" + k] = [x for x in c[k] if x not in b[k]]
+            out["fixed_" + k] = [x for x in b[k] if x not in c[k]]
+    return out
+
+
+def _few(items, n=4, fmt="`{}`"):
+    return ", ".join(fmt.format(x) for x in items[:n]) + (f" and {len(items) - n} more" if len(items) > n else "")
+
+
+def constraint_flags(cd):
+    """What the timing numbers silently stop covering: the failure mode behind Template_MiSTer #80
+    (constraints that match nothing after a rename), SNES #471 (a latch inferred as a clock) and
+    MacLC #5 (SDRAM pins without I/O constraints)."""
+    if not cd.get("known"):
+        return []
+    out = []
+    if cd["new_ignored"]:
+        out.append(f"has {len(cd['new_ignored'])} timing constraint(s) that now match nothing, so Quartus skips "
+                   f"them and those paths are not timed as the author intended: " + _few(cd["new_ignored"], 3))
+    if cd["new_clocks"]:
+        out.append("makes Quartus treat " + _few([short_node(x, 3) for x in cd["new_clocks"]]) +
+                   " as a clock with no constraint (usually a latch or a logic-generated clock), so its paths are not timed at all")
+    if cd["cand"]["latch_loops"] > cd["base"]["latch_loops"]:
+        out.append(f"adds combinational loops that Quartus times as latches "
+                   f"({cd['base']['latch_loops']} → {cd['cand']['latch_loops']})")
+    if cd["new_ports"]:
+        out.append("leaves new I/O pins without timing constraints, so their timing is never checked: " + _few(cd["new_ports"]))
+    if cd["new_bad_sdc"]:
+        out.append("has an `.sdc` file Quartus could not read cleanly: " + _few(cd["new_bad_sdc"], fmt="{}"))
+    return out
+
+
 # ---------------------------------------------------------------- optional gating
 def parse_thresholds(text):
     """Flat 'key: value' YAML subset (no PyYAML on the runner)."""
@@ -168,7 +283,7 @@ def parse_thresholds(text):
 
 KNOWN_THRESHOLDS = {"slack_margin_ns", "max_median_setup_drop_ns", "max_median_hold_drop_ns", "max_met_rate_drop",
                     "max_alm_increase", "forbid_watched_on_failing", "forbid_new_failing_clock",
-                    "forbid_regression_verdict"}
+                    "forbid_regression_verdict", "forbid_untimed_changes"}
 
 
 def check_thresholds(res, th):
@@ -199,6 +314,8 @@ def check_thresholds(res, th):
         fails.append("watched register on a failing path")
     if th.get("forbid_new_failing_clock") and any(r["new_failing"] for r in res["clocks_setup"] + res["clocks_hold"]):
         fails.append("new failing clock domain")
+    if th.get("forbid_untimed_changes") and constraint_flags(res.get("constraints") or {}):
+        fails.append("the PR leaves new paths untimed (constraint health)")
     if th.get("forbid_regression_verdict") and res["reasons"]:
         fails.append("verdict is 'Possible regression'")
     return {"set": bool(th), "failures": fails}

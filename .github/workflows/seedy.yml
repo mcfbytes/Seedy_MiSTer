@@ -94,6 +94,10 @@ on:
         description: "none | best (best + shipped seed of the candidate) | all"
         type: string
         default: best
+      keep_reports:
+        description: Keep every seed's full Quartus logs and text reports (one .tar.xz per seed) in a seedy-reports artifact for 14 days.
+        type: boolean
+        default: true
       override_seed:
         description: "never | if-failing | always: commit the best seed to the .qsf (non-PR runs; PR runs via seedy-report)."
         type: string
@@ -318,8 +322,11 @@ jobs:
         run: |
           mkdir -p plan
           python3 - <<'PY'
-          import json, os
+          import json, os, subprocess
           e = os.environ
+          # files the candidate changes (sys/, .sdc and .qsf edits are review flags); both commits were fetched above
+          diff = subprocess.run(["git", "-C", "core", "diff", "--name-only", e["R_BASE_SHA"], e["R_CAND_SHA"]],
+                                capture_output=True, text=True)
           meta = {
             "project": e["R_PROJECT"], "revision": e["R_REVISION"],
             "baseline": {"label": e["R_BASE_REF"], "sha": e["R_BASE_SHA"], "short": e["R_BASE_SHA"][:7]},
@@ -331,6 +338,7 @@ jobs:
             "seed_policy": e["POLICY"], "keep_rbf": e["KEEP_RBF"], "min_met": int(e["MIN_MET"]),
             "rbf_artifact": "seedy-rbf" if e["KEEP_RBF"] != "none" else "",
             "run_url": e["RUN_URL"], "event": e["EVENT"],
+            "changed_paths": diff.stdout.splitlines() if diff.returncode == 0 else None,
             "pr": {"number": int(e["PR_NUMBER"]) if e["PR_NUMBER"] else None,
                    "head_repo": e["PR_HEAD_REPO"], "head_ref": e["PR_HEAD_REF"]},
           }
@@ -423,6 +431,7 @@ jobs:
             --image "${{ needs.plan.outputs.image }}" --concurrency "${{ inputs.per_job_concurrency }}" \
             --threads "${{ inputs.threads_per_compile }}" --npaths "${{ inputs.worst_paths }}" \
             --watch-file plan/watch.txt --build-epoch "${{ needs.plan.outputs.build_epoch }}" --keep-rbf "$keep" \
+            --keep-reports "${{ inputs.keep_reports && 'yes' || 'no' }}" \
             --timeout "${{ inputs.compile_timeout }}" --work "$RUNNER_TEMP/work" --out "$RUNNER_TEMP/out" \
             --name "seedy-${{ github.run_id }}-${{ github.run_attempt }}-$VARIANT-$SHARD" \
             --peak-gb "${{ inputs.compile_peak_gb }}" "${hunt[@]}" \
@@ -437,6 +446,15 @@ jobs:
             ${{ runner.temp }}/out/logs/
           retention-days: 7
           if-no-files-found: warn
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && inputs.keep_reports
+        with:
+          name: seedy-reportshard-${{ matrix.variant }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out/reports/
+          retention-days: 1
+          if-no-files-found: ignore
+          compression-level: 0  # already xz
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: inputs.keep_rbf != 'none'
@@ -553,6 +571,18 @@ jobs:
           path: rbf/
           retention-days: 14
           if-no-files-found: ignore
+          compression-level: 0
+
+      - name: Bundle full Quartus reports
+        # one artifact with every seed's logs and reports; the per-shard pieces are deleted
+        if: inputs.keep_reports
+        continue-on-error: true
+        uses: actions/upload-artifact/merge@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: seedy-reports
+          pattern: seedy-reportshard-*
+          delete-merged: true
+          retention-days: 14
           compression-level: 0
 
       - name: Thresholds

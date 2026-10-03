@@ -60,11 +60,16 @@ def fit_summary(text):
         v = kv.get(key)
         return None if v is None else num(v.split("/")[0])
 
+    def avail(key):
+        v = kv.get(key)
+        return None if v is None or "/" not in v else num(v.split("/")[1].split("(")[0])
+
     return {
         "status": kv.get("Fitter Status", ""),
         "quartus_version": kv.get("Quartus Prime Version", ""),
         "device": kv.get("Device", ""),
         "alms": used("Logic utilization (in ALMs)"),
+        "alms_total": avail("Logic utilization (in ALMs)"),
         "registers": used("Total registers"),
         "pins": used("Total pins"),
         "block_memory_bits": used("Total block memory bits"),
@@ -111,7 +116,7 @@ def _rpt_table(text, title):
 
 
 def flow_rpt(text):
-    """<rev>.flow.rpt -> {runtime_s: {module: s}, peak_mem_mb: {module: MB}, total_s}."""
+    """<rev>.flow.rpt -> {runtime_s: {module: s}, peak_mem_mb: {module: MB}, total_s, settings: {name: value}}."""
     rows = _rpt_table(text, "Flow Elapsed Time")
     runtime, peak = {}, {}
     for r in rows[1:]:
@@ -120,7 +125,49 @@ def flow_rpt(text):
         runtime[r[0]] = hms(r[1])
         if num(r[3]) is not None:
             peak[r[0]] = num(r[3])
-    return {"runtime_s": runtime, "peak_mem_mb": peak, "total_s": runtime.get("Total")}
+    settings = {}
+    for r in _rpt_table(text, "Flow Non-Default Global Settings")[1:]:
+        if len(r) >= 2:
+            settings.setdefault(r[0], r[1])
+    return {"runtime_s": runtime, "peak_mem_mb": peak, "total_s": runtime.get("Total"), "settings": settings}
+
+
+# ---------------------------------------------------------------- constraint health (<rev>.sta.rpt)
+_IGNORED_RE = re.compile(r"^Warning \(332049\): (Ignored .*?)(?: File: .*)?$")
+_NOCLOCK_RE = re.compile(r"^Warning \(332060\): Node: (.*) was determined to be a clock but was found without an associated clock assignment")
+_LOOPS_RE = re.compile(r"^Warning \(335093\): .* analyzing (\d+) combinational loops? as latch")
+_UCP_ROWS = {"Illegal Clocks": "illegal_clocks", "Unconstrained Clocks": "clocks",
+             "Unconstrained Input Ports": "input_ports", "Unconstrained Input Port Paths": "input_paths",
+             "Unconstrained Output Ports": "output_ports", "Unconstrained Output Port Paths": "output_paths"}
+
+
+def sta_rpt(text):
+    """Constraint health from the flow's TimeQuest report: what the timing numbers do NOT cover.
+    Quartus prints each message once per analysis pass, so messages are de-duplicated."""
+    ucp = {}
+    for r in _rpt_table(text, "Unconstrained Paths Summary")[1:]:
+        if len(r) >= 2 and r[0] in _UCP_ROWS:
+            ucp[_UCP_ROWS[r[0]]] = num(r[1])
+    ports = set()
+    for title in ("Unconstrained Input Ports", "Unconstrained Output Ports"):
+        ports |= {r[0] for r in _rpt_table(text, title)[1:] if r and r[0]}
+    ignored, noclock, loops = set(), set(), 0
+    for line in text.splitlines():
+        line = line.strip()
+        m = _IGNORED_RE.match(line)
+        if m:
+            ignored.add(m.group(1).strip())
+            continue
+        m = _NOCLOCK_RE.match(line)
+        if m:
+            noclock.add(m.group(1).strip())
+            continue
+        m = _LOOPS_RE.match(line)
+        if m:
+            loops = max(loops, int(m.group(1)))
+    sdc = {r[0]: r[1] for r in _rpt_table(text, "SDC File List")[1:] if len(r) >= 2}
+    return {"unconstrained": ucp, "unconstrained_ports": sorted(ports), "unconstrained_clocks": sorted(noclock),
+            "ignored": sorted(ignored), "latch_loops": loops, "sdc_files": sdc}
 
 
 # ---------------------------------------------------------------- seedy_sta.tcl output

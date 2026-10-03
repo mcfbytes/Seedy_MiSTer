@@ -18,31 +18,40 @@ A PR comment like this, regenerated on every push to a PR that carries the `seed
 the SNES INITRAM change (75f10d3) against master (c61bfd4), 30 seeds each, rendered by `seedy render` from the
 [golden fixture](tests/fixtures/snes-2026-10-02/) (abridged).
 
-> **Seedy — SNES @ 75f10d3 vs master @ c61bfd4** · Quartus 17.0.2 Lite · 30 seeds each · *No measurable regression*
+> **Seedy — SNES: this PR @ 75f10d3 vs master @ c61bfd4**
 >
-> |  | master | this PR |
-> |---|---|---|
-> | Seeds meeting timing | 6/30 | 3/30 (Fisher p = 0.47) |
-> | WC slack: setup, mean / median | −0.469 / −0.403 ns | −0.341 / −0.275 ns (p = 0.29) |
-> | WC slack: hold, mean / median | +0.026 / +0.074 ns | +0.003 / +0.053 ns (p = 0.47) |
-> | Seeds with negative hold | 5 (worst −0.382) | 8 (worst −0.328) |
-> | WC slack: recovery, worst | +3.223 | +2.539 (p = 0.04) |
-> | f(MAX) geomean, mean | 78.85 MHz | 78.61 MHz (p = 0.61) |
-> | Logic utilization, mean | 35,116 ALMs | 34,939 ALMs (p < 0.001) |
-> | Shipped seed (1) setup / hold | −0.515 / +0.021 | −0.898 / +0.076 |
+> **No measurable regression** · Quartus 17.0.2 Lite · 30 seeds each
 >
-> Failing setup clocks are the same in both: emu c0, emu c2, pll_hdmi c0.
-> Watched registers `*ramimg*`: worst setup …, hold …, never on a failing path. *(with `watch_registers` set)*
+> Timing closed on 3 of 30 seeds of this PR, against 6 of 30 on master. With 30 seeds a difference that size can be chance (p = 0.47). The seed in the `.qsf` (1) does not close timing on this PR (worst setup −0.898 ns, hold +0.076 ns).
 >
-> **Recommended seed for hardware testing: 18**: seed 18 meets timing; worst slack +0.078 ns (setup +0.182, hold +0.078).
-> Its `.rbf` is in the `seedy-rbf` artifact; that exact bitstream is what was measured.
+> |  | master | this PR | Δ | p |
+> |---|---|---|---|---|
+> | Seeds that close timing | 6/30 | 3/30 | −3 | 0.47 |
+> | Worst setup slack (ns), average / typical seed | −0.469 / −0.403 | −0.341 / −0.275 | +0.128 / +0.128 | 0.29 |
+> | Worst setup slack (ns), unluckiest seed | −1.507 | −1.674 | −0.167 |  |
+> | Seeds with a hold violation | 5/30 | 8/30 | +3 | 0.53 |
+> | Logic used (ALMs), average | 35,116 | 34,939 | −177 | < 0.001 |
+> | The `.qsf`'s seed (1): setup / hold (ns) | −0.515 / +0.021 ✗ | −0.898 / +0.076 ✗ | −0.383 / +0.055 |  |
 >
-> ▸ Statistics (all metrics) ▸ Per-seed table (60 rows) ▸ Per-clock setup slack ▸ f(MAX) per clock ▸ Utilization ▸ Runtime ▸ Failing endpoints
+> | clock failing setup | seeds (base) | seeds (PR) | Δ | typical slack (base) | typical slack (PR) | Δ | unluckiest (base) | unluckiest (PR) | p |
+> |---|---|---|---|---|---|---|---|---|---|
+> | `emu c0` | 21/30 | 14/30 | −7 | −0.269 | +0.009 | +0.277 | −1.407 | −1.374 | 0.12 |
+> | `emu c2` | 17/30 | 15/30 | −2 | −0.061 | −0.057 | +0.004 | −1.507 | −1.674 | 0.80 |
+> | `pll_hdmi c0` | 11/30 | 13/30 | +2 | +0.057 | +0.072 | +0.015 | −0.483 | −0.387 | 0.79 |
+>
+> - Watched registers `*ramimg*`: worst setup …, hold …, never on a failing path. *(with `watch_registers` set)*
+>
+> **Recommended seed for hardware testing: 18** (meets timing; worst slack +0.078 ns).
+>
+> - Its `.rbf` is in the `seedy-rbf` artifact; that exact bitstream is what was measured.
+> - The `.qsf`'s seed 1 does not meet timing (worst slack −0.898 ns).
+>
+> ▸ Top 5 seeds ▸ How to read this ▸ Statistics (all metrics) ▸ Per-seed table (60 rows) ▸ Per-clock setup slack ▸ f(MAX) per clock ▸ Utilization ▸ Runtime ▸ Failing endpoints
 
 The verdict is deliberately conservative. Seedy never says "safe". It says *"No measurable regression"* or
 *"Possible regression: …"* and names the metric, the effect size and the p-value. In the comment above, recovery
 slack shifted with p = 0.04, but every seed kept more than 2.5 ns of recovery margin, so Seedy notes the shift and
-does not flag it. The run also uploads every number as CSV and JSON (`seedy-results`). The
+does not flag it. The run also uploads every number as CSV and JSON (`seedy-results`), and every seed's full Quartus logs and text reports as one `.tar.xz` per seed (`seedy-reports`, 14 days), so a run can be re-examined later. The
 [metrics guide](docs/METRICS.md) explains each column and where Quartus reports it.
 
 ## <img src="art/icons/packet-48.png" width="24" alt=""> Add it to your core
@@ -97,7 +106,7 @@ that commit and caches it as the baseline. Later PR runs against that commit com
 their cost. Cached baselines live on a `seedy-data` branch. Only trusted runs write it, never PR runs.
 
 The reusable workflow has more knobs: `shards`, `per_job_concurrency`, `threads_per_compile`, `worst_paths`,
-`keep_rbf`, `compile_peak_gb`, `compile_timeout` and `baseline_cache`. Each one is documented in
+`keep_rbf`, `keep_reports`, `compile_peak_gb`, `compile_timeout` and `baseline_cache`. Each one is documented in
 [`.github/workflows/seedy.yml`](.github/workflows/seedy.yml).
 
 ## <img src="art/icons/magnifier-48.png" width="24" alt=""> Hunt mode: cores that barely close

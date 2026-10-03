@@ -6,6 +6,9 @@ from seedy import parse, records, render
 from tests import helpers
 
 
+GALAKSIJA = os.path.join(os.path.dirname(__file__), "fixtures", "galaksija-2025-11-27")
+
+
 class DseImportTest(unittest.TestCase):
     def test_a1_reproduces_hand_made_sweep_csv(self):
         recs = helpers.dse_records()
@@ -33,12 +36,40 @@ class CompileRecordTest(unittest.TestCase):
         rec = records.from_compile_dir(helpers.compile_dir_ir(), "SNES", seed=1, variant="candidate")
         dse = next(r for r in helpers.dse_records() if r["variant"] == "candidate" and r["seed"] == 1)
         for k in ("setup", "hold", "recovery", "removal", "alms", "timing_met"):
-            self.assertEqual(rec["headline"][k], dse["headline"][k], k)
-        self.assertAlmostEqual(rec["headline"]["fmax_geomean"], dse["headline"]["fmax_geomean"], places=3)
+            self.assertEqual(rec["headline_all"][k], dse["headline"][k], k)
+        self.assertAlmostEqual(rec["headline_all"]["fmax_geomean"], dse["headline"]["fmax_geomean"], places=3)
+        # SNES.qsf turns multicorner analysis off, so the headline is what its own report shows: slow 100 C only
+        self.assertIs(rec["multicorner"], False)
+        self.assertEqual(rec["reported_corners"], ["7_slow_1100mv_100c"])
+        self.assertEqual(rec["headline"]["hold"], 0.198)
+        self.assertEqual(rec["utilization"]["alms_total"], 41910)
         self.assertEqual(len(rec["corners"]), 4)
         self.assertEqual(rec["utilization"]["dsp_blocks"], 61)
         self.assertEqual(rec["peak_mem_mb"]["Fitter"], 6411)
         self.assertEqual(rec["runtime_s"]["Total"], 820)
+
+    def test_reported_corners(self):
+        cs = ["7_slow_1100mv_-40c", "7_slow_1100mv_100c", "MIN_fast_1100mv_-40c", "MIN_fast_1100mv_100c"]
+        self.assertEqual(records.reported_corners(cs, False), ["7_slow_1100mv_100c"])
+        self.assertEqual(records.reported_corners(cs, True), cs)
+        self.assertEqual(records.reported_corners(cs, None), cs)  # unknown: report everything
+
+    def test_sta_rpt_constraint_health(self):
+        text = open(os.path.join(GALAKSIJA, "Galaksija.sta.rpt")).read()
+        c = parse.sta_rpt(text)
+        self.assertEqual(c["unconstrained_clocks"], ["emu:emu|div_clk[2]", "emu:emu|div_clk[3]",
+                                                     "emu:emu|galaksija_top:galaksija_top|T80s:cpu|MREQ_n"])
+        self.assertEqual(c["latch_loops"], 8)
+        self.assertEqual(c["unconstrained"]["clocks"], 3)
+        self.assertEqual(c["unconstrained"]["output_paths"], 81)
+        self.assertIn("HDMI_I2C_SDA", c["unconstrained_ports"])
+        self.assertEqual(c["sdc_files"], {"sys/sys_top.sdc": "OK"})
+        self.assertEqual(c["ignored"], [])
+        # Quartus's exact wording (DRFM.sta.rpt, 16.1); printed once per analysis pass, so it repeats
+        msg = ("Warning (332049): Ignored set_false_path at sys_top.sdc(47): Argument <to> is an empty collection "
+               "File: C:/x/sys/sys_top.sdc Line: 47\n")
+        c = parse.sta_rpt(text + msg + msg)
+        self.assertEqual(c["ignored"], ["Ignored set_false_path at sys_top.sdc(47): Argument <to> is an empty collection"])
 
     def test_sta_tsv_watch(self):
         rec = records.from_compile_dir(helpers.compile_dir_ir(), "SNES", seed=1, variant="candidate")
