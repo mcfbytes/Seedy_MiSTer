@@ -156,6 +156,12 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(res["verdict"], "Possible regression")
         self.assertIn("WC slack: setup worse", render.comment(res))
 
+    def test_delta_is_the_difference_of_the_printed_columns(self):
+        # 35,138.40 vs 35,137.83 ALMs both print as 35,138: the delta must read 0, not -1 (run 37214664117).
+        self.assertEqual(render._d("alms", 35138.40, 35137.83), "+0")
+        self.assertEqual(render._d("alms", 35138.4, 35139.6), "+2")
+        self.assertEqual(render._d("setup", -0.1734, -0.2656), "−0.093")
+
     def test_csv_outputs(self):
         recs = helpers.dse_records()
         self.assertEqual(render.seeds_csv(recs).count("\n"), 61)

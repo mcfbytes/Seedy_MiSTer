@@ -199,6 +199,9 @@ Quartus image plus 1 GB per concurrent compile.
 builds that start later, and running out of memory can take down a whole WSL2 VM. On a box that does other work,
 set `per_job_concurrency` to a fixed, conservative number, and raise `compile_peak_gb` for big cores.
 
+**Workspace:** a self-hosted runner keeps its workspace between runs, so every Seedy job empties it when it starts
+and again when it ends, even if it fails. Don't keep anything of your own in the runner's `_work` directory.
+
 **WSL2:** WSL gives the VM half of the host's RAM by default. Raise it with `memory=` in `%UserProfile%\.wslconfig`,
 because `auto` sizes concurrency from what Linux sees.
 

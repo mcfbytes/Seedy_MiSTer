@@ -116,9 +116,14 @@ def _details(summary, body):
     return f"<details><summary>{summary}</summary>\n\n{body}\n\n</details>"
 
 
+def _shown(key, v):
+    """v rounded the way fval prints it."""
+    return round(v, {"alms": 0, "compile_s": 0, "fmax_geomean": 2, "qof": 2}.get(key, 3))
+
+
 def _d(key, b, c):
-    """Delta cell, PR minus baseline, in the metric's own format."""
-    return "–" if b is None or c is None else fval(key, c - b, True)
+    """Delta cell, PR minus baseline: the difference of the two printed values, so the row adds up."""
+    return "–" if b is None or c is None else fval(key, _shown(key, c) - _shown(key, b), True)
 
 
 def _dn(b, c):
