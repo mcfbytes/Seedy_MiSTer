@@ -16,8 +16,8 @@ def result(merged=None, policy="off"):
 class RenderTest(unittest.TestCase):
     def test_headline_rows(self):
         c = render.comment(result())
-        self.assertTrue(c.startswith("<!-- seedy:SNES -->"))
-        for row in ("### [MiSTer Seedy](https://github.com/mcfbytes/Seedy_MiSTer) — SNES: this PR @ 75f10d3 vs master @ c61bfd4",
+        self.assertTrue(c.startswith("<!-- seedy:SNES -->\n### " + render.ICON + " [MiSTer Seedy]"))
+        for row in ("[MiSTer Seedy](https://github.com/mcfbytes/Seedy_MiSTer) — SNES: this PR @ 75f10d3 vs master @ c61bfd4",
                     "Report by [MiSTer Seedy](https://github.com/mcfbytes/Seedy_MiSTer) ",
                     "Timing closed on 3 of 30 seeds of this PR, against 6 of 30 on master.",
                     "| master | this PR | Δ | p |",

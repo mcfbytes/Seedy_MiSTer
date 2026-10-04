@@ -91,7 +91,7 @@ jobs:
         if: steps.pr.outputs.number != '' && steps.results.outcome != 'success'
         run: |
           project=$(python3 -c 'import json,re; p=json.load(open("results/meta.json"))["project"]; assert re.fullmatch(r"[A-Za-z0-9_.-]+", p); print(p)')
-          printf '<!-- seedy:%s -->\n**[MiSTer Seedy](https://github.com/mcfbytes/Seedy_MiSTer) — %s @ %s**: the run ended with *%s* before producing results. See [the run](%s).\n' \
+          printf '<!-- seedy:%s -->\n<img src="https://raw.githubusercontent.com/mcfbytes/Seedy_MiSTer/master/art/seedy-kun.png" width="24" alt=""> **[MiSTer Seedy](https://github.com/mcfbytes/Seedy_MiSTer) — %s @ %s**: the run ended with *%s* before producing results. See [the run](%s).\n' \
             "$project" "$project" "${RUN_HEAD_SHA:0:7}" "$RUN_CONCLUSION" "$RUN_URL" > results/comment.md
 
       - name: Seed decision (trusted policy)

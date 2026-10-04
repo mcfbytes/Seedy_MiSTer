@@ -10,6 +10,8 @@ from seedy.records import short_node
 
 COMMENT_LIMIT = 65536
 SEEDY = "[MiSTer Seedy](https://github.com/mcfbytes/Seedy_MiSTer)"
+ICON = ('<img src="https://raw.githubusercontent.com/mcfbytes/Seedy_MiSTer/master/art/seedy-kun.png" '
+        'width="24" alt="">')
 CREDIT = f"Report by {SEEDY} {__version__}, multi-seed Quartus timing CI for MiSTer cores."
 SEEDS_CSV_COLS = ["seed", "variant", "Quality of Fit", "f(MAX) Geomean (MHz)", "WC Slack: Setup",
                   "WC Slack: Hold", "WC Slack: Recovery", "WC Slack: Removal", "Logic Utilization",
@@ -538,7 +540,7 @@ def _seed_count(res):
 def comment(res, run_url=None, artifact_note=None):
     meta = res["meta"]
     corner = _corner_text(res)
-    title = f"### {SEEDY} — {meta['project']}: {_ref(meta['candidate'])} vs {_ref(meta['baseline'])}"
+    title = f"### {ICON} {SEEDY} — {meta['project']}: {_ref(meta['candidate'])} vs {_ref(meta['baseline'])}"
     th = res.get("threads") or {}
     sub = (f"**{res['verdict']}** · Quartus {meta.get('quartus_version_short', '?')} · {_seed_count(res)}"
            + _threads(sorted(set(th.get("base", [])) | set(th.get("cand", []))))
@@ -607,7 +609,7 @@ def single(merged, decision, run_url=None, status_lines=()):
     met = sorted(r["seed"] for r in ok if r["headline"].get("timing_met"))
     not_run = meta.get("not_run", {}).get(variant, [])
     hunt = meta.get("mode") == "hunt"
-    title = f"### {SEEDY} {'seed hunt' if hunt else 'baseline'} — {meta['project']}: {_ref(v)}"
+    title = f"### {ICON} {SEEDY} {'seed hunt' if hunt else 'baseline'} — {meta['project']}: {_ref(v)}"
     sub = (f"**{len(met)} meet timing** · Quartus {meta.get('quartus_version_short', '?')} · "
            f"{_seeds(len(recs))} compiled" + _threads(threads_setting(ok)))
     out = [marker(meta["project"]), title, "", sub, ""]
