@@ -160,6 +160,7 @@ jobs:
       revision: ${{ steps.refs.outputs.revision }}
       project: ${{ steps.refs.outputs.project }}
       build_epoch: ${{ steps.refs.outputs.build_epoch }}
+      seedy_sha: ${{ steps.seedy.outputs.sha }}
     steps:
       - name: Seedy scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -168,6 +169,11 @@ jobs:
           ref: ${{ inputs.seedy_ref }}
           path: .seedy
           persist-credentials: false
+
+      - name: Pin the Seedy version for every job
+        # later jobs check out this exact commit, so a push to seedy_ref mid-run can't mix versions
+        id: seedy
+        run: echo "sha=$(git -C .seedy rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Core source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -385,7 +391,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.seedy_repo }}
-          ref: ${{ inputs.seedy_ref }}
+          ref: ${{ needs.plan.outputs.seedy_sha || inputs.seedy_ref }}
           path: .seedy
           persist-credentials: false
 
@@ -437,6 +443,15 @@ jobs:
             --peak-gb "${{ inputs.compile_peak_gb }}" "${hunt[@]}" \
             --meta "{\"sha\": \"$SHA\", \"runner\": \"${{ runner.name }}\", \"runner_environment\": \"${{ runner.environment }}\"}"
 
+      - name: Remove this job's Quartus containers (also on cancel)
+        # compile-shard.sh removes its containers on exit, but a cancelled job can be killed before that
+        # trap runs, leaving compiles running on a self-hosted box. The names carry run, attempt, variant
+        # and shard, so only this job's containers match.
+        if: always()
+        env:
+          PREFIX: seedy-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}-${{ matrix.shard }}-s
+        run: docker ps -aq --filter "name=^${PREFIX}[0-9]+\$" | xargs -r docker rm -f
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -478,7 +493,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.seedy_repo }}
-          ref: ${{ inputs.seedy_ref }}
+          ref: ${{ needs.plan.outputs.seedy_sha || inputs.seedy_ref }}
           path: .seedy
           persist-credentials: false
 
@@ -659,7 +674,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.seedy_repo }}
-          ref: ${{ inputs.seedy_ref }}
+          ref: ${{ needs.plan.outputs.seedy_sha || inputs.seedy_ref }}
           path: .seedy
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
