@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # provision.sh: install what a Seedy runner VM needs: Docker, git, python3, jq and the GitHub Actions runner.
-# Packer runs it once to bake the image; on a stock Ubuntu image cloud-init runs it at first boot. A marker
-# file makes the boot-time run a no-op on a baked image.
+# cloud-init runs it at first boot. Run it while building a custom image (custom_image_id) and the marker
+# file it leaves makes the boot-time run a no-op.
 #
 # Environment: RUNNER_VERSION [latest]   PREPULL_IMAGES [none; space-separated Docker images to bake in]
 set -euo pipefail

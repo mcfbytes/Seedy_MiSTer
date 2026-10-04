@@ -1,5 +1,5 @@
 locals {
-  image_id = coalesce(var.custom_image_id, var.use_gallery_image ? azurerm_shared_image.runner.id : "none")
+  image_id = coalesce(var.custom_image_id, "none")
 
   cloud_init = templatefile("${path.module}/cloud-init.yaml.tftpl", {
     github_scope               = var.github_scope
@@ -8,6 +8,7 @@ locals {
     runner_labels              = join(",", var.runner_labels)
     runner_group_id            = var.runner_group_id
     key_vault_name             = azurerm_key_vault.this.name
+    registry                   = var.registry ? azurerm_container_registry.this[0].login_server : ""
     identity_client_id         = azurerm_user_assigned_identity.runner.client_id
     idle_minutes               = var.idle_minutes
     max_jobs                   = var.max_jobs_per_vm
@@ -119,5 +120,6 @@ resource "azurerm_orchestrated_virtual_machine_scale_set" "runners" {
   depends_on = [
     azurerm_role_assignment.runner_secrets,
     azurerm_role_assignment.runner_self_delete,
+    azurerm_role_assignment.runner_acr_pull,
   ]
 }

@@ -23,15 +23,14 @@ output "runs_on" {
   value       = jsonencode(concat(["self-hosted"], var.runner_labels))
 }
 
-output "packer_vars" {
-  description = "Arguments for packer build (see ../packer)."
-  value = join(" ", [
-    "-var subscription_id=${var.subscription_id}",
-    "-var resource_group=${azurerm_resource_group.this.name}",
-    "-var gallery_name=${azurerm_shared_image_gallery.this.name}",
-    "-var image_name=${azurerm_shared_image.runner.name}",
-    "-var location=${azurerm_resource_group.this.location}",
-  ])
+output "registry_name" {
+  description = "Container registry for the Quartus image(s): az acr import --name <this> ..."
+  value       = var.registry ? azurerm_container_registry.this[0].name : null
+}
+
+output "registry_login_server" {
+  description = "The registry's login server; VMs hand it to jobs as SEEDY_IMAGE_MIRROR."
+  value       = var.registry ? azurerm_container_registry.this[0].login_server : null
 }
 
 output "admin_ssh_private_key" {

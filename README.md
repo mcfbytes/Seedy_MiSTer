@@ -204,15 +204,19 @@ because `auto` sizes concurrency from what Linux sees.
 
 **Docker Hub limits:** anonymous image pulls are rate-limited. A hosted run with many shards may need
 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets (commented out in the template). Self-hosted runners pull once.
+A runner can also pull from a registry that holds copies of the images, such as an Azure Container Registry
+filled with `az acr import`. Set `SEEDY_IMAGE_MIRROR=<registry host>` in the runner's `.env` file, and run
+`docker login` for the runner's user. The images are pinned by digest, so a copy is the same image, and a
+missing copy falls back to Docker Hub.
 
-## <img src="art/icons/chip-48.png" width="24" alt=""> Azure spot VMs (no machine to keep running)
+## <img src="art/icons/chip-48.png" width="24" alt=""> Azure spot VMs (optional, no machine to keep running)
 
-[`cloud/azure`](cloud/azure/README.md) sets up the cloud version of a self-hosted runner, using Terraform and
-Packer. It is a scale set of Azure spot VMs that sits at zero. When the compile jobs queue, a small job signs
-in with OIDC and starts one VM per job. Each VM compiles its seeds and deletes itself. A 30-seed comparison
-takes about 30 minutes on 30 VMs and costs about $1 of spot compute. Idle, the setup costs about $1 a month.
-In the template, uncomment the `azure-runners` job and set
-`runs_on: '["self-hosted", "seedy-azure"]'` and `shards: 15`.
+[`cloud/azure`](cloud/azure/README.md) has Terraform files and step-by-step instructions for a scale set
+of Azure spot VMs that sits at zero. Each VM takes one compile job, pulls Quartus from a container registry
+in the same deployment, and deletes itself afterwards. You start VMs with `az vmss scale`, or let the
+`azure-runners` job in the template start one per queued job. A 30-seed comparison takes about 30 minutes
+on 30 VMs and costs about $1.20 of spot compute. Idle, the setup costs about $5 a month for the registry.
+The caller points Seedy at it with `runs_on: '["self-hosted", "seedy-azure"]'` and `shards: 15`.
 
 ## <img src="art/icons/stopwatch-48.png" width="24" alt=""> Running it locally
 

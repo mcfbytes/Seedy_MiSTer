@@ -146,16 +146,22 @@ variable "os_disk_size_gb" {
   default     = 128
 }
 
-variable "use_gallery_image" {
-  description = "Boot from the latest Packer-built image in this deployment's gallery (packer/). False: stock Ubuntu 24.04, provisioned at boot (a few minutes slower, and every VM pulls Quartus)."
-  type        = bool
-  default     = false
-}
-
 variable "custom_image_id" {
-  description = "Any other image ID to boot from (gallery image definition or version, or managed image). Overrides use_gallery_image."
+  description = "Image to boot instead of stock Ubuntu 24.04 (gallery image definition or version, or managed image). VMs still run provision.sh at boot, unless the image has /opt/seedy-runner/.provisioned (from running provision.sh while building it)."
   type        = string
   default     = null
+}
+
+variable "registry" {
+  description = "Create a container registry for local copies of the Quartus image(s), so VMs never pull from Docker Hub."
+  type        = bool
+  default     = true
+}
+
+variable "registry_sku" {
+  description = "Registry tier: Basic (~$5/month) or Standard (~$20/month, twice the pull throughput for large fan-outs)."
+  type        = string
+  default     = "Basic"
 }
 
 variable "admin_ssh_public_key" {

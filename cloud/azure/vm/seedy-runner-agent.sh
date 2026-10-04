@@ -7,6 +7,8 @@
 # Each job gets its own just-in-time (JIT) runner registration, so nothing on the VM can register more
 # runners later. The GitHub credential (a fine-grained PAT, or a GitHub App's private key) stays in Key
 # Vault; the VM reads it with its managed identity, which job steps and containers are firewalled from.
+# With a REGISTRY (the deployment's container registry), jobs get it as SEEDY_IMAGE_MIRROR and `runner` is
+# logged in to it, so Seedy pulls Quartus from there instead of Docker Hub.
 # The VM deletes itself after MAX_JOBS jobs, or once it has waited IDLE_MINUTES without getting one.
 set -euo pipefail
 
@@ -21,6 +23,7 @@ RUNNER_LABELS=${RUNNER_LABELS:-seedy-azure}
 RUNNER_GROUP_ID=${RUNNER_GROUP_ID:-1}
 IDLE_MINUTES=${IDLE_MINUTES:-10}
 MAX_JOBS=${MAX_JOBS:-1}
+REGISTRY=${REGISTRY:-}
 IMDS=http://169.254.169.254/metadata
 RUNNER_HOME=/home/runner/actions-runner
 
@@ -69,6 +72,17 @@ github_token() {
   gh_api POST "app/installations/$inst/access_tokens" | jq -er .token
 }
 
+registry_login() {
+  # the registry swaps the managed identity's Entra token for a refresh token that docker can use
+  [ -n "$REGISTRY" ] || return 0
+  local aad refresh
+  aad=$(imds_token https://management.azure.com/) || return 1
+  refresh=$(curl -fsS --retry 3 "https://$REGISTRY/oauth2/exchange" --data-urlencode grant_type=access_token \
+    --data-urlencode "service=$REGISTRY" --data-urlencode "access_token=$aad" | jq -er .refresh_token) || return 1
+  printf '%s' "$refresh" | runuser -u runner -- env HOME=/home/runner \
+    docker login "$REGISTRY" --username 00000000-0000-0000-0000-000000000000 --password-stdin >/dev/null
+}
+
 block_imds() {
   # Job steps run as `runner`, Quartus in Docker containers: neither may use the VM's managed identity.
   # Defence in depth only: `runner` is in the docker group, so a malicious workflow step could get root.
@@ -93,10 +107,13 @@ run_one_job() {
   runner_id=$(jq -er .runner.id <<<"$resp") && jit=$(jq -er .encoded_jit_config <<<"$resp") || return 2
 
   rm -rf "$RUNNER_HOME" && cp -a /opt/actions-runner "$RUNNER_HOME" && chown -R runner:runner "$RUNNER_HOME" || return 2
+  local mirror=$REGISTRY
+  if ! registry_login; then log "WARNING: no login to $REGISTRY; jobs pull from Docker Hub"; mirror=""; fi
   log "runner $name (id $runner_id) is waiting for a job with labels $RUNNER_LABELS"
   # own session, so an idle runner and everything it started can be stopped together
   # shellcheck disable=SC2016 # $1 and $2 expand in the inner shell
-  setsid runuser -u runner -- bash -c 'cd "$1" && exec ./run.sh --jitconfig "$2"' _ "$RUNNER_HOME" "$jit" &
+  setsid runuser -u runner -- env HOME=/home/runner SEEDY_IMAGE_MIRROR="$mirror" \
+    bash -c 'cd "$1" && exec ./run.sh --jitconfig "$2"' _ "$RUNNER_HOME" "$jit" &
   pid=$!
   t0=$SECONDS
   while kill -0 "$pid" 2>/dev/null; do

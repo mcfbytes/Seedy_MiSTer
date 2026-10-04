@@ -71,7 +71,7 @@ jobs:
       # watch_registers: |
       #   *ramimg*
       # Self-hosted (see README): runs_on: '["self-hosted", "linux", "quartus"]'
-      # Azure spot VMs (cloud/azure/README.md; uncomment azure-runners below too):
+      # Azure spot VMs (cloud/azure/README.md; for on-demand VMs also uncomment azure-runners below):
       # runs_on: '["self-hosted", "seedy-azure"]'
       # shards: 15
     # secrets:

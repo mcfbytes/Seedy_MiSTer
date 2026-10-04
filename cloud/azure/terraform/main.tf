@@ -1,6 +1,6 @@
 # Seedy runners on Azure: a scale set of spot VMs that sits at zero instances. A workflow job
 # (.github/workflows/azure-runners.yml) signs in with OIDC and scales it up to the jobs waiting for these
-# runners; each VM runs its jobs and deletes itself. Idle cost: a few cents a month for the image.
+# runners, or you scale it by hand; each VM runs its jobs and deletes itself. Idle cost: the registry.
 
 data "azurerm_client_config" "current" {}
 
@@ -122,6 +122,7 @@ resource "azurerm_role_definition" "scaler" {
       "Microsoft.Compute/virtualMachines/delete",
       "Microsoft.Compute/disks/read",
       "Microsoft.Compute/disks/write",
+      # a custom_image_id from a gallery in this resource group
       "Microsoft.Compute/galleries/read",
       "Microsoft.Compute/galleries/images/read",
       "Microsoft.Compute/galleries/images/versions/read",
@@ -176,28 +177,25 @@ resource "azurerm_role_assignment" "runner_self_delete" {
   principal_type     = "ServicePrincipal"
 }
 
-# ---- image gallery: Packer (../packer) bakes Docker, the runner and the Quartus image into it ----
+# ---- container registry: a local copy of the Quartus image(s) ----
+# VMs pull from here, in-region and through their managed identity, never from Docker Hub with its
+# per-IP limits. Fill it with `az acr import` (README). Basic costs about $5 a month.
 
-resource "azurerm_shared_image_gallery" "this" {
-  name                = "${replace(var.name, "-", "_")}_gallery_${local.suffix}"
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
-  description         = "Seedy runner images"
-  tags                = var.tags
+resource "azurerm_container_registry" "this" {
+  count                  = var.registry ? 1 : 0
+  name                   = "${replace(var.name, "-", "")}${local.suffix}"
+  resource_group_name    = azurerm_resource_group.this.name
+  location               = azurerm_resource_group.this.location
+  sku                    = var.registry_sku
+  admin_enabled          = false
+  anonymous_pull_enabled = false
+  tags                   = var.tags
 }
 
-resource "azurerm_shared_image" "runner" {
-  name                = "seedy-runner"
-  gallery_name        = azurerm_shared_image_gallery.this.name
-  resource_group_name = azurerm_resource_group.this.name
-  location            = azurerm_resource_group.this.location
-  os_type             = "Linux"
-  hyper_v_generation  = "V2"
-  architecture        = "x64"
-  identifier {
-    publisher = "SeedyMiSTer"
-    offer     = "seedy-runner"
-    sku       = "ubuntu-24.04"
-  }
-  tags = var.tags
+resource "azurerm_role_assignment" "runner_acr_pull" {
+  count                = var.registry ? 1 : 0
+  scope                = azurerm_container_registry.this[0].id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.runner.principal_id
+  principal_type       = "ServicePrincipal"
 }

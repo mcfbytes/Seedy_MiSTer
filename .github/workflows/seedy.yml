@@ -415,11 +415,28 @@ jobs:
           password: ${{ secrets.dockerhub_token }}
 
       - name: Pull Quartus image
+        id: image
         env:
           IMAGE: ${{ needs.plan.outputs.image }}
-        # skipped when the runner already has it (pre-pulled, or baked into a cloud/azure image): even an
-        # up-to-date pull counts against Docker Hub's anonymous limit
-        run: docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull --quiet "$IMAGE"
+        # A runner can name a registry that holds copies of Docker Hub images in SEEDY_IMAGE_MIRROR (the
+        # cloud/azure VMs do; on your own runner, set it in the runner's .env and docker login there). The
+        # image is pinned by digest, so the copy is byte-for-byte the same. Without one, or if the copy is
+        # missing, Docker Hub. Images already on the runner aren't pulled again: even an up-to-date pull
+        # counts against Docker Hub's anonymous limit.
+        run: |
+          run_image=$IMAGE
+          if [ -n "${SEEDY_IMAGE_MIRROR:-}" ]; then
+            mirrored="${SEEDY_IMAGE_MIRROR%/}/$IMAGE"
+            if docker image inspect "$mirrored" >/dev/null 2>&1 || docker pull --quiet "$mirrored"; then
+              run_image=$mirrored
+            else
+              echo "::warning::$mirrored is not in $SEEDY_IMAGE_MIRROR; pulling from Docker Hub"
+            fi
+          fi
+          if [ "$run_image" = "$IMAGE" ]; then
+            docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull --quiet "$IMAGE"
+          fi
+          echo "run_image=$run_image" >> "$GITHUB_OUTPUT"
 
       - name: Compile seeds ${{ matrix.seeds }}
         env:
@@ -438,7 +455,7 @@ jobs:
           fi
           .seedy/quartus/compile-shard.sh --src "$RUNNER_TEMP/src.tar" --variant "$VARIANT" --seeds "${{ matrix.seeds }}" \
             --project "${{ needs.plan.outputs.project }}" --revision "${{ needs.plan.outputs.revision }}" \
-            --image "${{ needs.plan.outputs.image }}" --concurrency "${{ inputs.per_job_concurrency }}" \
+            --image "${{ steps.image.outputs.run_image }}" --concurrency "${{ inputs.per_job_concurrency }}" \
             --threads "${{ inputs.threads_per_compile }}" --npaths "${{ inputs.worst_paths }}" \
             --watch-file plan/watch.txt --build-epoch "${{ needs.plan.outputs.build_epoch }}" --keep-rbf "$keep" \
             --keep-reports "${{ inputs.keep_reports && 'yes' || 'no' }}" \
