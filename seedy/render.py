@@ -401,7 +401,7 @@ def signals(res):
     if e["known"]:
         co = e["cand_only"]
         if co:
-            top = sorted(co.items(), key=lambda kv: -kv[1])
+            top = sorted(co.items(), key=lambda kv: (-kv[1], kv[0]))
             line = f"Failing paths end in {len(co)} place(s) the baseline never fails: " + ", ".join(
                 f"`{short_node(k, 3)}` ({v})" for k, v in top[:8]) + (f" and {len(top) - 8} more" if len(top) > 8 else "")
             if not e.get("cand_only_recurring"):
@@ -488,7 +488,7 @@ def _signed(fmt):
 
 def endpoints_section(res):
     e = res["endpoints"]
-    fams = sorted(set(e["base"]) | set(e["cand"]), key=lambda k: -(e["cand"].get(k, 0) + e["base"].get(k, 0)))
+    fams = sorted(set(e["base"]) | set(e["cand"]), key=lambda k: (-(e["cand"].get(k, 0) + e["base"].get(k, 0)), k))
     return _table(["failing endpoint (normalised)", "baseline seeds", "PR seeds", "Δ"],
                   [[f"`{short_node(k, 3)}`", e["base"].get(k, 0), e["cand"].get(k, 0),
                     _dn(e["base"].get(k, 0), e["cand"].get(k, 0))] for k in fams[:40]])
@@ -666,7 +666,7 @@ def single(merged, decision, run_url=None, status_lines=()):
     blocks = [_details("How to read this", GLOSSARY), _details(f"All seeds ({len(recs)})", per_seed_table(recs))]
     if fam:
         blocks.append(_details("Failing endpoints (seeds)", _table(["endpoint", "seeds"], [
-            [f"`{short_node(k, 3)}`", n] for k, n in sorted(fam.items(), key=lambda kv: -kv[1])[:40]])))
+            [f"`{short_node(k, 3)}`", n] for k, n in sorted(fam.items(), key=lambda kv: (-kv[1], kv[0]))[:40]])))
     blocks.append(_details("Utilization", dict_section(recs, "utilization", lambda x: f"{x:,.0f}")))
     blocks.append(_details("Runtime", dict_section(recs, "runtime_s", fmt_hms)))
     if status_lines:

@@ -168,7 +168,7 @@ def compare(merged, thresholds=None, seed_policy="off"):
                         "cand_only": cand_only, "cand_only_recurring": recurring}
     if paths_known and recurring:
         res["reasons"].append("new failing endpoints: " + ", ".join(
-            f"`{short_node(k, 3)}` ({v}/{len(cand)} seeds)" for k, v in sorted(recurring.items(), key=lambda kv: -kv[1])))
+            f"`{short_node(k, 3)}` ({v}/{len(cand)} seeds)" for k, v in sorted(recurring.items(), key=lambda kv: (-kv[1], kv[0]))))
 
     res["threads"] = {"base": threads_setting(base), "cand": threads_setting(cand)}
     res["constraints"] = constraint_diff(base, cand)
