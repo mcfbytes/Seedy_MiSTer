@@ -55,6 +55,25 @@ class QsfTest(unittest.TestCase):
         t = "a\nset_global_assignment -name NUM_PARALLEL_PROCESSORS ALL\nb\n"
         self.assertEqual(quartus.set_threads(t, 4), "a\nb\nset_global_assignment -name NUM_PARALLEL_PROCESSORS 4\n")
 
+    def test_read_threads(self):
+        self.assertEqual(quartus.read_threads("set_global_assignment -name NUM_PARALLEL_PROCESSORS all\n"), "ALL")
+        self.assertEqual(quartus.read_threads("set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL\r\n"
+                                              "set_global_assignment -name NUM_PARALLEL_PROCESSORS 8 # last wins\r\n"), "8")
+        self.assertEqual(quartus.read_threads("set_global_assignment -name SEED 1\n"), "unset")
+
+    def test_prepare_keeps_qsf_threads_unless_overridden(self):
+        import os, tempfile
+        d = tempfile.mkdtemp()
+        q = os.path.join(d, "SNES.qsf")
+        qsf = "set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL\nset_global_assignment -name SEED 1\n"
+        files.write(q, qsf)
+        info = quartus.prepare(d, "SNES", 7, 0, 1790000000)
+        self.assertEqual((info["threads"], info["threads_override"]), ("ALL", False))
+        self.assertEqual(files.read(q), qsf.replace("SEED 1", "SEED 7"))
+        info = quartus.prepare(d, "SNES", 7, 4, 1790000000)
+        self.assertEqual((info["threads"], info["threads_override"]), ("4", True))
+        self.assertEqual(quartus.read_threads(files.read(q)), "4")
+
     def test_pin_build_date(self):
         import os, tempfile
         d = tempfile.mkdtemp()

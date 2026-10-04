@@ -9,6 +9,7 @@ from seedy import files
 SEED_RE = re.compile(r"^[ \t]*set_global_assignment[ \t]+-name[ \t]+SEED[ \t]+([^\s#]+)[^\r\n]*?(\r?)$", re.M | re.I)
 SEED_LINE_RE = re.compile(r"^[ \t]*set_global_assignment[ \t]+-name[ \t]+SEED[ \t][^\n]*\n?", re.M | re.I)
 NPP_RE = re.compile(r"^[ \t]*set_global_assignment[ \t]+-name[ \t]+NUM_PARALLEL_PROCESSORS[ \t][^\n]*\n?", re.M | re.I)
+NPP_VALUE_RE = re.compile(r"^[ \t]*set_global_assignment[ \t]+-name[ \t]+NUM_PARALLEL_PROCESSORS[ \t]+([^\s#]+)", re.M | re.I)
 PRE_FLOW_RE = re.compile(r'PRE_FLOW_SCRIPT_FILE\s+"?quartus_sh:([^"\s]+)"?', re.I)
 CLOCK_SECONDS_RE = re.compile(r"\[\s*clock\s+seconds\s*\]")
 
@@ -32,6 +33,14 @@ def read_seed(qsf_text):
     """The .qsf's own SEED (Quartus default is 1 when absent; the last assignment wins)."""
     m = SEED_RE.findall(qsf_text)
     return int(m[-1][0]) if m else 1
+
+
+def read_threads(qsf_text):
+    """The .qsf's own NUM_PARALLEL_PROCESSORS ("ALL", a number, or "unset"; the last assignment wins).
+    The value is part of what the fitter computes: the same seed gives a different fit at ALL, 4, 8 or 16
+    (docs/VALIDATION.md), while the machine's CPU count changes nothing. Unset behaves like ALL."""
+    m = NPP_VALUE_RE.findall(qsf_text)
+    return m[-1].upper() if m else "unset"
 
 
 def _eol(text):
@@ -93,10 +102,12 @@ def pin_build_date(root, epoch):
 
 
 def prepare(root, revision, seed, threads, epoch):
-    """Set SEED and thread count in the revision .qsf and pin the build date."""
+    """Set SEED in the revision .qsf and pin the build date. The .qsf's NUM_PARALLEL_PROCESSORS is kept, so
+    each seed compiles exactly as the core's own build would; threads > 0 overrides it."""
     q = qsf_path(root, revision)
-    text = files.read(q)
-    text = set_threads(set_seed(text, seed), threads)
+    text = set_seed(files.read(q), seed)
+    if threads:
+        text = set_threads(text, threads)
     files.write(q, text)
-    return {"qsf": os.path.basename(q), "seed": seed, "threads": threads,
+    return {"qsf": os.path.basename(q), "seed": seed, "threads": read_threads(text), "threads_override": bool(threads),
             "build_date_patched": pin_build_date(root, epoch)}

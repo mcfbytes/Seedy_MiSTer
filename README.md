@@ -109,6 +109,12 @@ The reusable workflow has more knobs: `shards`, `per_job_concurrency`, `threads_
 `keep_rbf`, `keep_reports`, `compile_peak_gb`, `compile_timeout` and `baseline_cache`. Each one is documented in
 [`.github/workflows/seedy.yml`](.github/workflows/seedy.yml).
 
+**Leave `threads_per_compile` at 0.** Quartus's `NUM_PARALLEL_PROCESSORS` is part of the fit: the same seed
+places differently at `ALL`, `4`, `8` and `16`, while the machine's CPU count changes nothing. With 0, every seed
+compiles with the core's own `.qsf` setting (MiSTer cores ship `ALL`), so a seed that meets timing in Seedy
+meets it in the release build too. A number overrides it, and the results then hold only for builds at that
+setting. See [docs/VALIDATION.md](docs/VALIDATION.md).
+
 ## <img src="art/icons/magnifier-48.png" width="24" alt=""> Hunt mode: cores that barely close
 
 On some cores (Saturn and PSX are the usual suspects) most seeds fail timing. The useful question there is
@@ -230,7 +236,7 @@ on different days.
 | step | what happens |
 |---|---|
 | plan | Resolves both refs to SHAs, reads each `.qsf`'s `SEED`, splits seeds round-robin into shards, and looks up the cached baseline. |
-| compile | For each seed: `git archive` → set `SEED` and `NUM_PARALLEL_PROCESSORS` → pin the build date → `quartus_sh --flow compile` → `quartus_sta -t seedy_sta.tcl`: per-clock, per-corner slack and TNS, f(MAX), the worst paths, and the paths from/to watched registers. |
+| compile | For each seed: `git archive` → set `SEED` (keeping the `.qsf`'s own `NUM_PARALLEL_PROCESSORS`) → pin the build date → `quartus_sh --flow compile` → `quartus_sta -t seedy_sta.tcl`: per-clock, per-corner slack and TNS, f(MAX), the worst paths, and the paths from/to watched registers. |
 | aggregate | Merges the shards. It **fails loudly if any seed is missing**, so 27 seeds are never silently compared with 30. |
 | compare | Seeds are unpaired samples. Seedy uses Fisher's exact test for timing-met counts, a permutation test (20,000 shuffles, fixed RNG) for every metric, a bootstrap CI for median shifts, newly failing clock domains and endpoint families, and the watched-register worst slack. |
 | report | Writes the PR comment and job summary, CSV/JSON artifacts, and the best seed's `.rbf`. A separate `workflow_run` job posts the comment, so fork PRs never touch a write token. |

@@ -5,7 +5,7 @@
 #   compile-shard.sh --src <ref.tar> --variant <name> --seeds 1,11,21 --out <dir> [options]
 #
 # Options (defaults in brackets): --project/--revision [auto] --image [theypsilon/quartus-lite-c5:17.0.2]
-#   --concurrency [auto] --threads [4] --npaths [40] --watch-file [none] --build-epoch [ref tar mtime]
+#   --concurrency [auto] --threads [0: keep the .qsf's NUM_PARALLEL_PROCESSORS] --npaths [40] --watch-file [none] --build-epoch [ref tar mtime]
 #   --keep-rbf none|all [none] --keep-reports yes|no [no] --work [$RUNNER_TEMP/seedy-work, else next to --out] --name [seedy-<variant>]
 #   --peak-gb [7, RAM per compile for --concurrency auto] --timeout [4h per compile] --meta '<json merged into every record>'
 # Hunt mode (hard-to-close cores): seeds are tried in the order given, and no new seed starts once
@@ -18,7 +18,7 @@ ROOT="$(dirname "$HERE")"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 SRC= VARIANT= SEEDS= OUT= PROJECT= REVISION= IMAGE=theypsilon/quartus-lite-c5:17.0.2
-CONC=auto THREADS=4 NPATHS=40 WATCH= EPOCH= KEEP_RBF=none KEEP_REPORTS=no NAME= TIMEOUT=4h META='{}' STOP_MET=0 DEADLINE=0 PEAK_GB=7
+CONC=auto THREADS=0 NPATHS=40 WATCH= EPOCH= KEEP_RBF=none KEEP_REPORTS=no NAME= TIMEOUT=4h META='{}' STOP_MET=0 DEADLINE=0 PEAK_GB=7
 WORK=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -49,7 +49,8 @@ PROJECT=$project REVISION=$revision
 rm -rf "$probe"
 EPOCH=${EPOCH:-$(stat -c %Y "$SRC")}
 if [ "$CONC" = auto ]; then CONC=$(python3 -m seedy concurrency --threads "$THREADS" --peak-gb "$PEAK_GB"); fi
-echo "seedy: $VARIANT seeds $SEEDS of $PROJECT/$REVISION, $CONC at a time x $THREADS threads, image $IMAGE"
+THREADS_TEXT="NUM_PARALLEL_PROCESSORS $THREADS (override)"; [ "$THREADS" = 0 ] && THREADS_TEXT="the .qsf's NUM_PARALLEL_PROCESSORS"
+echo "seedy: $VARIANT seeds $SEEDS of $PROJECT/$REVISION, $CONC at a time, $THREADS_TEXT, image $IMAGE"
 
 CONTAINERS="$WORK/$NAME.containers"; : > "$CONTAINERS"
 cleanup() {
@@ -77,7 +78,7 @@ run_seed() {
   [ -s "$d/mem.peak" ] && peak=$(tr -dc 0-9 < "$d/mem.peak")
   # written to a temp name and renamed, so the stop checks below never read a half-written record
   python3 -m seedy collect "$d" --revision "$REVISION" --seed "$seed" --variant "$VARIANT" \
-    --meta "$(python3 -c 'import json,sys; m=json.loads(sys.argv[1]); m.update(image=sys.argv[2], wall_s=int(sys.argv[3]), cgroup_peak_bytes=int(sys.argv[4] or 0)); print(json.dumps(m))' "$META" "$IMAGE" "$((SECONDS - t0))" "$peak")" \
+    --meta "$(python3 -c 'import json,sys; m=json.loads(sys.argv[1]); p=json.load(open(sys.argv[5])); m.update(image=sys.argv[2], wall_s=int(sys.argv[3]), cgroup_peak_bytes=int(sys.argv[4] or 0), threads=p["threads"], threads_override=p["threads_override"]); print(json.dumps(m))' "$META" "$IMAGE" "$((SECONDS - t0))" "$peak" "$d/seedy-prepare.json")" \
     --log "$log" --out "$rec.tmp"
   mv "$rec.tmp" "$rec"
   for f in compile.log sta.log; do [ -f "$d/$f" ] && tail -c 20000 "$d/$f" > "$OUT/logs/$VARIANT-$seed-$f" || true; done

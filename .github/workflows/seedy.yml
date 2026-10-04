@@ -75,9 +75,12 @@ on:
         type: string
         default: auto
       threads_per_compile:
-        description: NUM_PARALLEL_PROCESSORS per compile, identical for both variants.
+        description: >-
+          0 (default) compiles with each variant's own .qsf NUM_PARALLEL_PROCESSORS, exactly as the core's release
+          build does. The value changes the fit like a seed does, so a number here overrides it for both variants
+          and seed results then apply only to builds at that setting.
         type: number
-        default: 4
+        default: 0
       watch_registers:
         description: Newline-separated register globs for the new-logic path check, e.g. *ramimg*.
         type: string

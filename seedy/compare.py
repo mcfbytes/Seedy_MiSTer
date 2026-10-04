@@ -92,6 +92,13 @@ def watched_summary(recs):
             "seeds_with_data": len(have)}
 
 
+def threads_setting(recs):
+    """NUM_PARALLEL_PROCESSORS the records were compiled with, e.g. ["ALL"] or ["4 (override)"]; [] for records
+    from before Seedy recorded it."""
+    return sorted({str(r["threads"]) + (" (override)" if r.get("threads_override") else "")
+                   for r in recs if r.get("threads")})
+
+
 def compare(merged, thresholds=None, seed_policy="off"):
     meta, records = merged["meta"], merged["records"]
     margin = (thresholds or {}).get("slack_margin_ns", SLACK_MARGIN_NS)
@@ -163,6 +170,7 @@ def compare(merged, thresholds=None, seed_policy="off"):
         res["reasons"].append("new failing endpoints: " + ", ".join(
             f"`{short_node(k, 3)}` ({v}/{len(cand)} seeds)" for k, v in sorted(recurring.items(), key=lambda kv: -kv[1])))
 
+    res["threads"] = {"base": threads_setting(base), "cand": threads_setting(cand)}
     res["constraints"] = constraint_diff(base, cand)
     res["review"] = review_flags(meta, base, cand) + constraint_flags(res["constraints"])
 
@@ -188,7 +196,7 @@ def compare(merged, thresholds=None, seed_policy="off"):
 def review_flags(meta, base, cand):
     """Changes MiSTer maintainers object to on sight, whatever the statistics say: a new clock (it can
     hide real problems by making paths asynchronous), edits to the shared sys/ framework, constraint
-    (.sdc) and project (.qsf) edits, and a changed fitter SEED."""
+    (.sdc) and project (.qsf) edits, and a changed fitter SEED or NUM_PARALLEL_PROCESSORS."""
     out = []
     bc = {c["clock"] for r in base for c in r.get("clocks", [])}
     cc = {c["clock"] for r in cand for c in r.get("clocks", [])}
@@ -202,6 +210,10 @@ def review_flags(meta, base, cand):
     seeds = meta.get("shipped_seed") or {}
     if seeds.get("baseline") is not None and seeds.get("candidate") is not None and seeds["baseline"] != seeds["candidate"]:
         out.append(f"changes the `.qsf` SEED ({seeds['baseline']} → {seeds['candidate']}); maintainers pick the release seed themselves")
+    bt, ct = threads_setting(base), threads_setting(cand)
+    if bt and ct and bt != ct:
+        out.append(f"changes the `.qsf` NUM_PARALLEL_PROCESSORS ({', '.join(bt)} → {', '.join(ct)}); "
+                   "like a new SEED, that alone gives every seed a different fit")
     paths = meta.get("changed_paths") or []
     groups = (("edits the shared `sys/` framework", lambda p: p.startswith("sys/")),
               ("edits timing constraints (`.sdc`)", lambda p: p.lower().endswith(".sdc")),

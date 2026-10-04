@@ -78,6 +78,26 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("ppu", text)
         self.assertIn("Needs a maintainer's eye", render.comment(res))
 
+    def test_threads_setting_shown_and_flagged(self):
+        m = helpers.merged()
+        for r in m["records"]:
+            r["threads"], r["threads_override"] = "ALL", False
+        res = result(m)
+        self.assertEqual(res["threads"], {"base": ["ALL"], "cand": ["ALL"]})
+        self.assertFalse(any("NUM_PARALLEL_PROCESSORS" in x for x in res["review"]))
+        self.assertIn("· NUM_PARALLEL_PROCESSORS ALL", render.comment(res))
+        for r in m["records"]:
+            if r["variant"] == "candidate":
+                r["threads"] = "16"
+        res = result(m)
+        self.assertIn("NUM_PARALLEL_PROCESSORS (ALL → 16)", "\n".join(res["review"]))
+        self.assertIn("· NUM_PARALLEL_PROCESSORS 16 / ALL", render.comment(res))
+        for r in m["records"]:
+            r["threads"], r["threads_override"] = "4", True
+        res = result(m)
+        self.assertFalse(any("NUM_PARALLEL_PROCESSORS" in x for x in res["review"]))
+        self.assertIn("· NUM_PARALLEL_PROCESSORS 4 (override)", render.comment(res))
+
     def test_reset_slack_flags_only_when_failing(self):
         res = result()  # recovery shifts with p = 0.04 but every seed keeps > +2.5 ns
         self.assertFalse(any("recovery" in r for r in res["reasons"]))

@@ -57,7 +57,8 @@ def cmd_concurrency(a):
     except (OSError, StopIteration):
         mem_kb = 16 * 1024 * 1024
     by_mem = int((mem_kb / 1048576 - a.reserve_gb) // a.peak_gb)
-    by_cpu = (os.cpu_count() or 1) // max(1, a.threads)
+    # a compile averages ~2-3 busy cores whatever its NUM_PARALLEL_PROCESSORS; 4 per compile leaves room for bursts
+    by_cpu = (os.cpu_count() or 1) // max(1, a.threads or 4)
     print(max(1, min(by_mem, by_cpu)))
 
 
@@ -238,7 +239,7 @@ def main(argv=None):
     p.add_argument("--revision", default="")
     p.add_argument("--baseline-sha", default="")
     p.add_argument("--image", default="")
-    p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--threads", type=int, default=0, help="NUM_PARALLEL_PROCESSORS override; 0 = the .qsf's own")
     p.add_argument("--build-epoch", type=int, default=0)
     p.add_argument("--npaths", type=int, default=40)
     p.set_defaults(fn=cmd_plan)
@@ -248,7 +249,7 @@ def main(argv=None):
     p.set_defaults(fn=cmd_expand_seeds)
 
     p = sub.add_parser("concurrency", help="compiles that fit on this machine")
-    p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--threads", type=int, default=0, help="NUM_PARALLEL_PROCESSORS override; 0 = the .qsf's own")
     p.add_argument("--peak-gb", type=float, default=7.0)
     p.add_argument("--reserve-gb", type=float, default=2.0)
     p.set_defaults(fn=cmd_concurrency)
@@ -259,11 +260,11 @@ def main(argv=None):
     p.add_argument("--revision", default="")
     p.set_defaults(fn=cmd_find_project)
 
-    p = sub.add_parser("prepare", help="set SEED/threads and pin the build date in a work copy")
+    p = sub.add_parser("prepare", help="set SEED (and a threads override) and pin the build date in a work copy")
     p.add_argument("dir")
     p.add_argument("--revision", required=True)
     p.add_argument("--seed", type=int, required=True)
-    p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--threads", type=int, default=0, help="NUM_PARALLEL_PROCESSORS override; 0 keeps the .qsf's own")
     p.add_argument("--build-epoch", type=int, required=True)
     p.set_defaults(fn=cmd_prepare)
 

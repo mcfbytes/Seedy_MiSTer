@@ -4,7 +4,7 @@ import io
 import re
 
 from seedy import seedpick
-from seedy.compare import ALPHA, short_clock
+from seedy.compare import ALPHA, short_clock, threads_setting
 from seedy.parse import fmt_hms
 from seedy.records import short_node
 
@@ -518,6 +518,11 @@ def _seeds(n):
     return f"{n} seed" if n == 1 else f"{n} seeds"
 
 
+def _threads(labels):
+    """' · NUM_PARALLEL_PROCESSORS ALL' for the subtitle; empty when unknown (records from older Seedy)."""
+    return f" · NUM_PARALLEL_PROCESSORS {' / '.join(labels)}" if labels else ""
+
+
 def _seed_count(res):
     b, c = res["met"]["base_n"], res["met"]["cand_n"]
     return f"{_seeds(c)} each" if b == c else f"{b} baseline / {c} PR seeds"
@@ -527,7 +532,9 @@ def comment(res, run_url=None, artifact_note=None):
     meta = res["meta"]
     corner = _corner_text(res)
     title = f"### Seedy — {meta['project']}: {_ref(meta['candidate'])} vs {_ref(meta['baseline'])}"
+    th = res.get("threads") or {}
     sub = (f"**{res['verdict']}** · Quartus {meta.get('quartus_version_short', '?')} · {_seed_count(res)}"
+           + _threads(sorted(set(th.get("base", [])) | set(th.get("cand", []))))
            + (f" · timing at {corner}" if corner else ""))
     parts = [marker(meta["project"]), title, "", sub, "", plain_summary(res), ""]
     if res["reasons"]:
@@ -595,7 +602,7 @@ def single(merged, decision, run_url=None, status_lines=()):
     hunt = meta.get("mode") == "hunt"
     title = f"### Seedy {'seed hunt' if hunt else 'baseline'} — {meta['project']}: {_ref(v)}"
     sub = (f"**{len(met)} meet timing** · Quartus {meta.get('quartus_version_short', '?')} · "
-           f"{_seeds(len(recs))} compiled")
+           f"{_seeds(len(recs))} compiled" + _threads(threads_setting(ok)))
     out = [marker(meta["project"]), title, "", sub, ""]
     if hunt:
         from seedy.plan import parse_seeds

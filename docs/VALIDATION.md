@@ -25,9 +25,36 @@ slow-100 °C Fmax Summary in `sta.rpt` alone gives different per-clock values (e
 
 ## 2. Determinism
 
-- **Seed and project fixed, thread count varied:** the seed-1 full compile used `NUM_PARALLEL_PROCESSORS ALL`
-  (32 threads), while DSE used 4. The results are identical (table above). Seedy still pins 4 threads for both
-  variants.
+Quartus is deterministic, but `NUM_PARALLEL_PROCESSORS` is an input to the fit, just like `SEED`. Measured
+2026-10-04 on SNES `c61bfd4`, seed 1, build date pinned, Seedy's `prepare`, CPUs limited with `docker --cpuset-cpus`:
+
+| run | `NUM_PARALLEL_PROCESSORS` | CPUs visible | Quartus says | `.rbf` sha256 | ALMs | setup | met |
+|---|---|---|---|---|---|---|---|
+| A | `16` | 32 | up to 16 | `f93f77fc…` | 35,045 | +0.065 | yes |
+| B | `16` | 4 | up to 16 (warns) | `f93f77fc…` | 35,045 | +0.065 | yes |
+| G | `16` (A repeated) | 32 | up to 16 | `f93f77fc…` | 35,045 | +0.065 | yes |
+| C | `ALL` | 32 | 16 of 32 | `ec083578…` | 35,094 | −0.830 | no |
+| D | `ALL` | 8 | 8 of 8 | `ec083578…` | 35,094 | −0.830 | no |
+| E | `4` | 32 | up to 4 | `ec083578…` | 35,094 | −0.830 | no |
+| — | `8` | 32 | up to 8 | (not kept) | 35,060 | +0.221 | yes |
+
+- **Same settings, same bitstream:** A, B and G are byte-identical, as are C, D and E.
+- **The CPU count changes nothing**, for an explicit number (A = B) and for `ALL` (C = D).
+- **The setting's value changes the fit:** `ALL`, `8` and `16` are three different designs from one seed, and
+  here seed 1 fails at `ALL` but meets timing at `8` and `16`.
+- **`ALL` fits exactly like `4`** (C = E), even though `ALL` runs up to 16 threads (`min(CPUs, 16)`; Quartus 17
+  caps every setting at 16). The 2026-10-02 runs agree: seed 1 of `75f10d3` at `ALL` matched DSE at 4 threads
+  (table above). This has been seen on SNES only.
+- **Unset behaves like `ALL`** ("16 of 32 processors detected" in a small test project).
+
+So Seedy keeps each `.qsf`'s own `NUM_PARALLEL_PROCESSORS` (`threads_per_compile: 0`, the default since 1.2.0)
+and every seed compiles exactly as the core's release build would. Up to 1.1.0 Seedy forced `4`, which per the
+row above gave the same bitstreams as the `ALL` that MiSTer cores ship. Results from cores that pin some other
+number were measured at the wrong setting.
+
+The thread count costs memory: at `ALL` on 32 CPUs a compile peaked at 6.4 GiB (cgroup), against 4.7 GiB at
+`ALL` on 8 CPUs.
+
 - **Repeat runs:** seeds 4 and 18 were compiled again on 2026-10-02 with the build date pinned to the date of
   the original DSE run (`261002`). Every headline number matched the original. A different build date is a
   different design (it lands in the CONF_STR ROM), so Seedy pins it to the baseline commit's date for both
@@ -46,6 +73,8 @@ slow-100 °C Fmax Summary in `sta.rpt` alone gives different per-clock values (e
 still to do.
 
 ## Still open
+
+- **`ALL` on fewer than 4 CPUs** (2-vCPU runners): `ALL` then runs 2 threads; untested whether it still fits like `4`.
 
 - **End-to-end CI:** a run on GitHub (fork of SNES_MiSTer, `seed_count: 4`, `shards: 2`), the comment post, and
   the baseline cache hit on a re-run.
