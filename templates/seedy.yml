@@ -71,6 +71,26 @@ jobs:
       # watch_registers: |
       #   *ramimg*
       # Self-hosted (see README): runs_on: '["self-hosted", "linux", "quartus"]'
+      # Azure spot VMs (cloud/azure/README.md; uncomment azure-runners below too):
+      # runs_on: '["self-hosted", "seedy-azure"]'
+      # shards: 15
     # secrets:
     #   dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
     #   dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  # Optional: start Azure spot VMs for the compile jobs, one per job; they delete themselves afterwards.
+  # azure-runners:
+  #   # the seedy job's condition, minus fork PRs: those stay on GitHub-hosted runners
+  #   if: >-
+  #     github.event_name != 'pull_request' ||
+  #     (contains(github.event.pull_request.labels.*.name, 'seedy') &&
+  #      (github.event.action != 'labeled' || github.event.label.name == 'seedy') &&
+  #      github.event.pull_request.head.repo.full_name == github.repository)
+  #   uses: mcfbytes/Seedy_MiSTer/.github/workflows/azure-runners.yml@master
+  #   permissions:
+  #     id-token: write  # OIDC sign-in to Azure
+  #     actions: read    # count the compile jobs waiting for a VM
+  #   with:
+  #     vmss_id: ${{ vars.SEEDY_AZURE_VMSS_ID }}
+  #     client_id: ${{ vars.SEEDY_AZURE_CLIENT_ID }}
+  #     tenant_id: ${{ vars.SEEDY_AZURE_TENANT_ID }}

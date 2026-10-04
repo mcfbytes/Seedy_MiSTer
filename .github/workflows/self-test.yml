@@ -24,6 +24,51 @@ jobs:
       - run: python -m unittest discover -s tests -t . -v
       - run: bash -n quartus/compile-shard.sh
 
+  cloud:
+    # cloud/azure: Terraform plan tests run against mocked providers, so no Azure account is involved
+    runs-on: ubuntu-26.04
+    env:
+      TF_VERSION: 1.16.5
+      TF_SHA256: 2bc2fcfff033265c9e02ca0351f01794eb122f62a9b2a49a3294b9e49eaab5e4
+      PACKER_VERSION: 1.16.1
+      PACKER_SHA256: af38a9e93e4ed1b9ca68206ae969c64c300c82a3dde46a780dfa629f0867f651
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Terraform and Packer
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin" && cd "$RUNNER_TEMP"
+          for t in "terraform $TF_VERSION $TF_SHA256" "packer $PACKER_VERSION $PACKER_SHA256"; do
+            read -r name version sha <<<"$t"
+            zip="${name}_${version}_linux_amd64.zip"
+            curl -fsSLO "https://releases.hashicorp.com/$name/$version/$zip"
+            echo "$sha  $zip" | sha256sum -c -
+            unzip -oq "$zip" "$name" -d bin
+          done
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Terraform fmt, validate, test
+        working-directory: cloud/azure/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+      - name: Packer fmt, validate
+        working-directory: cloud/azure/packer
+        env:
+          PACKER_GITHUB_API_TOKEN: ${{ github.token }}  # plugin download; anonymous GitHub API calls are rate-limited
+        run: |
+          packer fmt -check .
+          packer init .
+          packer validate -var subscription_id=00000000-0000-0000-0000-000000000000 -var resource_group=rg \
+            -var gallery_name=gallery -var location=eastus .
+      - name: shellcheck VM scripts
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q shellcheck; }
+          shellcheck cloud/azure/vm/*.sh
+
   lint:
     runs-on: ubuntu-26.04
     steps:

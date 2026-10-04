@@ -1,0 +1,45 @@
+#cloud-config
+# Rendered by Terraform (vmss.tf) into every runner VM: install what's missing, run jobs, delete the VM.
+write_files:
+  - path: /etc/seedy-runner/config.env
+    permissions: "0600"
+    content: |
+      GITHUB_SCOPE='${github_scope}'
+      GITHUB_APP_ID='${github_app_id}'
+      GITHUB_APP_INSTALLATION_ID='${github_app_installation_id}'
+      RUNNER_LABELS='${runner_labels}'
+      RUNNER_GROUP_ID='${runner_group_id}'
+      KEY_VAULT_NAME='${key_vault_name}'
+      IDENTITY_CLIENT_ID='${identity_client_id}'
+      IDLE_MINUTES='${idle_minutes}'
+      MAX_JOBS='${max_jobs}'
+  - path: /opt/seedy-runner/provision.sh
+    permissions: "0755"
+    encoding: b64
+    content: ${provision_sh}
+  - path: /opt/seedy-runner/seedy-runner-agent.sh
+    permissions: "0755"
+    encoding: b64
+    content: ${agent_sh}
+  - path: /etc/systemd/system/seedy-runner.service
+    encoding: b64
+    content: ${runner_service}
+  - path: /etc/systemd/system/seedy-runner-watchdog.service
+    encoding: b64
+    content: ${watchdog_service}
+  - path: /etc/systemd/system/seedy-runner-watchdog.timer
+    content: |
+      [Unit]
+      Description=Seedy: maximum lifetime of this VM
+
+      [Timer]
+      OnBootSec=${max_lifetime_minutes}min
+
+      [Install]
+      WantedBy=timers.target
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now seedy-runner-watchdog.timer
+  # a no-op on a baked image; a VM that can't provision must not sit there billing
+  - RUNNER_VERSION='${runner_version}' /opt/seedy-runner/provision.sh || exec /opt/seedy-runner/seedy-runner-agent.sh self-delete
+  - systemctl enable --now seedy-runner.service

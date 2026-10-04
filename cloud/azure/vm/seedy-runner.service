@@ -1,0 +1,16 @@
+[Unit]
+Description=Seedy: GitHub Actions jobs on this VM, then delete the VM
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/opt/seedy-runner/seedy-runner-agent.sh run
+# the console lands in the scale set's boot diagnostics (serial log), handy when a VM never takes a job
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

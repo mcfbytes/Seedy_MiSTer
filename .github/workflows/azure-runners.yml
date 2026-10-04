@@ -1,0 +1,81 @@
+# Azure runners: scale the Azure spot VM scale set from cloud/azure to the jobs of this run that wait
+# for its runners. Call it as a job beside the one that needs them (templates/seedy.yml shows how); it
+# signs in to Azure with OIDC, adds a VM per queued job and stops once every job has one. The VMs delete
+# themselves after their job. Setup: cloud/azure/README.md.
+name: Azure runners (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      vmss_id:
+        description: Scale set resource ID (terraform output vmss_id).
+        type: string
+        required: true
+      client_id:
+        description: Client ID of the scaler identity (terraform output scaler_client_id).
+        type: string
+        required: true
+      tenant_id:
+        description: Entra tenant ID (terraform output tenant_id).
+        type: string
+        required: true
+      label:
+        description: Runner label to count queued jobs by (the first of terraform's runner_labels).
+        type: string
+        default: seedy-azure
+      environment:
+        description: GitHub environment of the scaling job; Azure trusts its OIDC subject (terraform's scaler_environment).
+        type: string
+        default: seedy-azure
+      wait_minutes:
+        description: Stop if no job asks for the label within this many minutes.
+        type: number
+        default: 30
+      boot_grace_minutes:
+        description: Add more VMs for jobs still queued this long after a scale-up (evicted or failed VMs).
+        type: number
+        default: 8
+      runs_on:
+        description: JSON runner labels for this small job.
+        type: string
+        default: '["ubuntu-26.04"]'
+      seedy_repo:
+        description: Where the scaler script comes from (keep in step with the version in the uses line).
+        type: string
+        default: mcfbytes/Seedy_MiSTer
+      seedy_ref:
+        description: Seedy version for the scaler script (keep in step with the version in the uses line).
+        type: string
+        default: master
+
+permissions: {}
+
+jobs:
+  scale:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    environment: ${{ inputs.environment }}
+    # waits while jobs queue for the label; a long hunt can keep jobs queued behind max_instances
+    timeout-minutes: 360
+    permissions:
+      id-token: write  # OIDC sign-in to Azure: no stored Azure secret
+      actions: read    # list this run's jobs
+    steps:
+      - name: Seedy scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.seedy_repo }}
+          ref: ${{ inputs.seedy_ref }}
+          path: .seedy
+          persist-credentials: false
+          sparse-checkout: cloud/azure
+
+      - name: Scale for queued jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VMSS_ID: ${{ inputs.vmss_id }}
+          AZURE_CLIENT_ID: ${{ inputs.client_id }}
+          AZURE_TENANT_ID: ${{ inputs.tenant_id }}
+          LABEL: ${{ inputs.label }}
+          WAIT_MINUTES: ${{ inputs.wait_minutes }}
+          BOOT_GRACE_MINUTES: ${{ inputs.boot_grace_minutes }}
+        run: python3 .seedy/cloud/azure/scaler.py

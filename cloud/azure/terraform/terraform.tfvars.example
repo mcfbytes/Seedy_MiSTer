@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars and fill in. Everything else has a default (see variables.tf).
+subscription_id = "00000000-0000-0000-0000-000000000000"
+github_scope    = "your-name/YourCore_MiSTer" # or an organization: "your-org" (then set scaler_repositories)
+
+# location       = "eastus"
+# github_app_id  = "123456"                    # register with a GitHub App instead of a PAT
+# vm_sizes       = ["Standard_D8ads_v5"]       # 8 vCPU / 32 GB: two compiles at Seedy's defaults
+# max_instances  = 30
+# spot           = true
+# use_gallery_image = true                     # after the first packer build

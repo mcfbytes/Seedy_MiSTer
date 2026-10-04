@@ -415,7 +415,11 @@ jobs:
           password: ${{ secrets.dockerhub_token }}
 
       - name: Pull Quartus image
-        run: docker pull --quiet "${{ needs.plan.outputs.image }}"
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+        # skipped when the runner already has it (pre-pulled, or baked into a cloud/azure image): even an
+        # up-to-date pull counts against Docker Hub's anonymous limit
+        run: docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull --quiet "$IMAGE"
 
       - name: Compile seeds ${{ matrix.seeds }}
         env:

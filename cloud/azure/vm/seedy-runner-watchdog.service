@@ -1,0 +1,8 @@
+[Unit]
+Description=Seedy: delete this VM once it reaches its maximum lifetime
+
+[Service]
+Type=oneshot
+ExecStart=/opt/seedy-runner/seedy-runner-agent.sh self-delete
+StandardOutput=journal+console
+StandardError=journal+console

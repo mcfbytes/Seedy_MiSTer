@@ -205,6 +205,15 @@ because `auto` sizes concurrency from what Linux sees.
 **Docker Hub limits:** anonymous image pulls are rate-limited. A hosted run with many shards may need
 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets (commented out in the template). Self-hosted runners pull once.
 
+## <img src="art/icons/chip-48.png" width="24" alt=""> Azure spot VMs (no machine to keep running)
+
+[`cloud/azure`](cloud/azure/README.md) sets up the cloud version of a self-hosted runner, using Terraform and
+Packer. It is a scale set of Azure spot VMs that sits at zero. When the compile jobs queue, a small job signs
+in with OIDC and starts one VM per job. Each VM compiles its seeds and deletes itself. A 30-seed comparison
+takes about 30 minutes on 30 VMs and costs about $1 of spot compute. Idle, the setup costs about $1 a month.
+In the template, uncomment the `azure-runners` job and set
+`runs_on: '["self-hosted", "seedy-azure"]'` and `shards: 15`.
+
 ## <img src="art/icons/stopwatch-48.png" width="24" alt=""> Running it locally
 
 The same scripts run on a workstation with Docker, for example to check a branch overnight before you open a PR:
