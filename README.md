@@ -18,7 +18,7 @@ A PR comment like this, regenerated on every push to a PR that carries the `seed
 the SNES INITRAM change (75f10d3) against master (c61bfd4), 30 seeds each, rendered by `seedy render` from the
 [golden fixture](tests/fixtures/snes-2026-10-02/) (abridged).
 
-> **Seedy — SNES: this PR @ 75f10d3 vs master @ c61bfd4**
+> **MiSTer Seedy — SNES: this PR @ 75f10d3 vs master @ c61bfd4**
 >
 > **No measurable regression** · Quartus 17.0.2 Lite · 30 seeds each
 >

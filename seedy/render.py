@@ -3,12 +3,14 @@ import csv
 import io
 import re
 
-from seedy import seedpick
+from seedy import __version__, seedpick
 from seedy.compare import ALPHA, short_clock, threads_setting
 from seedy.parse import fmt_hms
 from seedy.records import short_node
 
 COMMENT_LIMIT = 65536
+SEEDY = "[MiSTer Seedy](https://github.com/mcfbytes/Seedy_MiSTer)"
+CREDIT = f"Report by {SEEDY} {__version__}, multi-seed Quartus timing CI for MiSTer cores."
 SEEDS_CSV_COLS = ["seed", "variant", "Quality of Fit", "f(MAX) Geomean (MHz)", "WC Slack: Setup",
                   "WC Slack: Hold", "WC Slack: Recovery", "WC Slack: Removal", "Logic Utilization",
                   "Compilation Time", "Timing met"]
@@ -536,7 +538,7 @@ def _seed_count(res):
 def comment(res, run_url=None, artifact_note=None):
     meta = res["meta"]
     corner = _corner_text(res)
-    title = f"### Seedy — {meta['project']}: {_ref(meta['candidate'])} vs {_ref(meta['baseline'])}"
+    title = f"### {SEEDY} — {meta['project']}: {_ref(meta['candidate'])} vs {_ref(meta['baseline'])}"
     th = res.get("threads") or {}
     sub = (f"**{res['verdict']}** · Quartus {meta.get('quartus_version_short', '?')} · {_seed_count(res)}"
            + _threads(sorted(set(th.get("base", [])) | set(th.get("cand", []))))
@@ -582,7 +584,7 @@ def comment(res, run_url=None, artifact_note=None):
             "20,000 shuffles, fixed RNG; Fisher exact for counts). "
             + ("QoF exists only for DSE runs. " if not any(m["key"] == "qof" for m in res["metrics"]) else "")
             + (f"[Run and artifacts]({run_url}). " if run_url else "")
-            + (artifact_note or "") + "</sub>")
+            + (artifact_note or "") + CREDIT + "</sub>")
     body = head + "\n" + "\n".join(blocks) + "\n\n" + foot
     if len(body) > COMMENT_LIMIT - 200:
         body = head + "\n" + blocks[0] + "\n" + blocks[1] + \
@@ -605,7 +607,7 @@ def single(merged, decision, run_url=None, status_lines=()):
     met = sorted(r["seed"] for r in ok if r["headline"].get("timing_met"))
     not_run = meta.get("not_run", {}).get(variant, [])
     hunt = meta.get("mode") == "hunt"
-    title = f"### Seedy {'seed hunt' if hunt else 'baseline'} — {meta['project']}: {_ref(v)}"
+    title = f"### {SEEDY} {'seed hunt' if hunt else 'baseline'} — {meta['project']}: {_ref(v)}"
     sub = (f"**{len(met)} meet timing** · Quartus {meta.get('quartus_version_short', '?')} · "
            f"{_seeds(len(recs))} compiled" + _threads(threads_setting(ok)))
     out = [marker(meta["project"]), title, "", sub, ""]
@@ -668,7 +670,7 @@ def single(merged, decision, run_url=None, status_lines=()):
     if status_lines:
         blocks.append(_details("Shard stop reasons", "```\n" + "\n".join(status_lines) + "\n```"))
     foot = "<sub>" + (f"[Run and artifacts]({run_url}). " if run_url else "") + \
-        "Ranking: meets timing, then worst of the four WC slacks, then total negative slack.</sub>"
+        "Ranking: meets timing, then worst of the four WC slacks, then total negative slack. " + CREDIT + "</sub>"
     body = "\n".join(out) + "\n" + "\n".join(blocks) + "\n\n" + foot
     if len(body) > COMMENT_LIMIT - 200:
         body = "\n".join(out) + "\n_Detail tables too large; see the `seedy-results` artifact._\n\n" + foot
