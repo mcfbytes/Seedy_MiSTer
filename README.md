@@ -105,7 +105,7 @@ A manual run on the default branch itself (or the optional `push:` trigger in th
 that commit and caches it as the baseline. Later PR runs against that commit compile only the PR, which halves
 their cost. Cached baselines live on a `seedy-data` branch. Only trusted runs write it, never PR runs.
 
-The reusable workflow has more knobs: `shards`, `per_job_concurrency`, `threads_per_compile`, `worst_paths`,
+The reusable workflow has more knobs: `jobs`, `per_job_concurrency`, `threads_per_compile`, `worst_paths`,
 `keep_rbf`, `keep_reports`, `compile_peak_gb`, `compile_timeout` and `baseline_cache`. Each one is documented in
 [`.github/workflows/seedy.yml`](.github/workflows/seedy.yml).
 
@@ -133,11 +133,12 @@ On some cores (Saturn and PSX are the usual suspects) most seeds fail timing. Th
 * If a compile job crashes or times out, the report says so. It never passes off lost seeds as "not started".
 
 **How the stop works with several jobs.** GitHub Actions jobs can't signal each other while they run, so each
-shard hunts on its own and stops at its own share of `min_met`, which is `ceil(min_met / shards)`. With the
-defaults (`min_met: 1`, `shards: 10`) one shard can find a closing seed in the first hour while the other nine
+job hunts on its own and stops at its own share of `min_met`, which is `ceil(min_met / jobs)`. With the
+defaults (`min_met: 1`, 10 jobs) one job can find a closing seed in the first hour while the other nine
 keep compiling until they each find one or hit `hunt_minutes`. A hosted hunt therefore tends to use its whole
-time budget. Choose `shards` to match how much compute you want to spend, not how fast you want the first hit.
-Only a single job (`shards: 1`, typically one big self-hosted machine) stops exactly when `min_met` seeds meet timing.
+time budget. Choose `jobs` to match how much compute you want to spend, not how fast you want the first hit.
+Only a single job (`jobs: 1`, typically one big self-hosted machine) stops exactly when `min_met` seeds meet timing,
+and `jobs: max` (one seed per job) can't stop early at all.
 
 ## <img src="art/icons/ticket-48.png" width="24" alt=""> The best seed: test it, then ship it
 
@@ -169,7 +170,7 @@ only), and it doesn't push if the branch moved while the run was in progress. Ma
 
 A 30-seed comparison is about **17 compile-hours**: 60 compiles at 15–19 minutes each for SNES, and bigger
 cores take longer. GitHub-hosted runners do the job well for **public repos**, where standard runners are free,
-have 4 vCPU and 16 GB, and run two compiles per job. On **private repos** they bill by the minute. Those runners
+have 4 vCPU and 16 GB, and run one compile per job. On **private repos** they bill by the minute. Those runners
 have 2 vCPU and 8 GB, so they fit one compile per job, and a single comparison eats 1,000+ runner-minutes, about
 half a month of the free plan's allowance. A spare desktop does better.
 
@@ -180,24 +181,49 @@ Quartus image plus 1 GB per concurrent compile.
 1. Add a runner: repo **Settings → Actions → Runners → New self-hosted runner**, and give it an extra label,
    e.g. `quartus`. Run it as a service. Put the runner user in the `docker` group.
 2. Pre-pull the image once, so the first run doesn't spend 10 minutes downloading:
-   `docker pull theypsilon/quartus-lite-c5:17.0.2`
-3. Point the compile jobs at it in `.github/workflows/seedy.yml`:
+   `docker pull theypsilon/quartus-lite-c5:17.0.2`. A job skips the pull when the runner already has the
+   pinned image.
+3. Set the machine's compile budget in the runner's `.env` file (next to `config.sh`), then restart the runner:
+   `SEEDY_SLOTS=7` (RAM ÷ 7 GB, rounded down, for SNES-sized cores). Every Seedy job on the machine then shares
+   those slots, whichever runner instance or run it belongs to, so two overlapping runs can't double the load.
+   `SEEDY_SLOT_DIR` moves the lock files (default `/var/tmp/seedy-slots`).
+4. Point the compile jobs at it in `.github/workflows/seedy.yml`:
 
    ```yaml
        with:
          runs_on: '["self-hosted", "linux", "quartus"]'
-         shards: 1                    # one job per variant; one big box runs the seeds itself
-         per_job_concurrency: auto    # from free RAM and CPUs; or a number
-         # light_runs_on: '["self-hosted", "linux", "quartus"]'  # also keep the 1-minute bookkeeping jobs off hosted runners
+         jobs: 2                      # compile jobs in total: the runner instances you have (see below)
+         per_job_concurrency: auto    # = SEEDY_SLOTS when set; else from free RAM and CPUs
+         # light_runs_on stays GitHub-hosted (the default): aggregate must not queue behind a compile
    ```
 
-   With `shards: 1` and `per_job_concurrency: auto`, a 32-thread / 64 GB machine runs 8 compiles at once, so a
-   30-seed comparison takes about 3 hours (baseline and PR jobs run one after the other on a single runner). With several runners, raise `shards` so they share the work.
-4. Make `job_timeout_minutes` generous (self-hosted jobs aren't capped at 6 h), e.g. `1440` for a long hunt.
+   Every compile job carries both variants of its seeds, so the runners share the work evenly, also when the
+   baseline is cached and only the PR compiles. A 30-seed comparison is 62 compiles. On SNES at 7 at a time each
+   takes about 40 minutes, so one 32-thread / 56 GB machine finishes in about 6 hours, or 3 with the baseline
+   cached; every extra machine of that size divides that.
+5. Make `job_timeout_minutes` generous (self-hosted jobs aren't capped at 6 h), e.g. `1440` for a long hunt.
 
-**Shared machines:** `auto` sizes concurrency from the RAM that's free when the job starts. It can't foresee other
-builds that start later, and running out of memory can take down a whole WSL2 VM. On a box that does other work,
-set `per_job_concurrency` to a fixed, conservative number, and raise `compile_peak_gb` for big cores.
+**How many runners and jobs.** A runner instance runs one job at a time. Two common setups:
+
+- **One instance per machine, `jobs` = number of machines.** Each job fills its machine (`per_job_concurrency:
+  auto`). Fewest jobs, but each job's seeds are fixed up front, so a slow machine finishes last.
+- **Several instances per machine, `jobs: max`.** Register as many instances as the machine has slots, all with
+  the same labels, and keep `SEEDY_SLOTS` set. Each seed becomes its own job and goes to whichever runner frees
+  up first, so a mix of fast and slow machines balances itself. A job costs a few seconds of checkout; the image is
+  already local. Hunts should keep a number instead, because one-seed jobs can't stop early.
+
+**Autoscaled VMs (Azure VMSS and the like).** Bake the Quartus image into the VM image, or keep the VM disks
+between jobs, so pulls stay rare. Otherwise mirror it into a registry next to the VMs
+(`az acr import --source docker.io/theypsilon/quartus-lite-c5:17.0.2 …` keeps the same digest) and point
+`quartus_image` at it, e.g. `myacr.azurecr.io/quartus-lite-c5:17.0.2@sha256:42e6…`; the VM must already be logged
+in to the registry (for example through its managed identity). Write `SEEDY_SLOTS` into the runner's `.env` when
+provisioning. With ephemeral runners (one job per VM), set `jobs` to the number of VMs rather than `max`, so each
+VM's single job fills it.
+
+**Shared machines:** without `SEEDY_SLOTS`, `auto` sizes concurrency from the RAM that's free when the job starts. It
+can't foresee other builds that start later, and running out of memory can take down a whole WSL2 VM. On a box
+that does other work, set `SEEDY_SLOTS` (or `per_job_concurrency`) to a fixed, conservative number, and raise
+`compile_peak_gb` for big cores.
 
 **Workspace:** a self-hosted runner keeps its workspace between runs, so every Seedy job empties it when it starts
 and again when it ends, even if it fails. Don't keep anything of your own in the runner's `_work` directory.
@@ -211,7 +237,7 @@ because `auto` sizes concurrency from what Linux sees.
 > forks with a manual run from a branch you've reviewed. Also set **Settings → Actions → General → "Require
 > approval for all outside collaborators"**, and prefer a machine that holds nothing you'd mind losing.
 
-**Docker Hub limits:** anonymous image pulls are rate-limited. A hosted run with many shards may need
+**Docker Hub limits:** anonymous image pulls are rate-limited. A hosted run with many jobs may need
 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets (commented out in the template). Self-hosted runners pull once.
 
 ## <img src="art/icons/stopwatch-48.png" width="24" alt=""> Running it locally
@@ -221,15 +247,16 @@ The same scripts run on a workstation with Docker, for example to check a branch
 ```sh
 git -C ~/SNES_MiSTer archive master    -o base.tar
 git -C ~/SNES_MiSTer archive my-branch -o cand.tar
-quartus/compile-shard.sh --src base.tar --variant baseline  --seeds 1-8 --out out/base --concurrency 2
-quartus/compile-shard.sh --src cand.tar --variant candidate --seeds 1-8 --out out/cand --concurrency 2 \
+# both variants in one pool, seed by seed, 2 compiles at a time
+quartus/compile-shard.sh --src baseline=base.tar --src candidate=cand.tar \
+    --items 'baseline=1-8;candidate=1-8' --out out --concurrency 2 \
     --watch-file watch.txt --keep-rbf all       # watch.txt: one register glob per line, e.g. *ramimg*
-python3 -m seedy aggregate out/base out/cand --seeds 1-8 --project SNES --out merged.json
+python3 -m seedy aggregate out --seeds 1-8 --project SNES --out merged.json
 python3 -m seedy render merged.json --out-dir report   # report/comment.md, seeds.csv, per-clock.csv, best-seed.json …
 python3 -m seedy import-dse dse-run/ --seeds 1-16 --variant baseline --out dse.json  # reuse an existing DSE run
 ```
 
-Set `--concurrency` with care on a shared machine: each compile needs about 4.5 GB resident (SNES), and running
+Set `--concurrency` (or `--slots`, the limit shared with every other Seedy job on the machine) with care on a shared machine: each compile needs about 4.5 GB resident (SNES), and running
 out of memory can take down a whole WSL2 VM. Use the same `--build-epoch` for both variants if you build them
 on different days.
 `python3 -m seedy --help` lists every command. Seedy is plain Python 3 with no dependencies.
@@ -238,9 +265,9 @@ on different days.
 
 | step | what happens |
 |---|---|
-| plan | Resolves both refs to SHAs, reads each `.qsf`'s `SEED`, splits seeds round-robin into shards, and looks up the cached baseline. |
+| plan | Resolves both refs to SHAs, reads each `.qsf`'s `SEED`, splits the compiles of both variants round-robin into `jobs` mixed jobs, and looks up the cached baseline. |
 | compile | For each seed: `git archive` → set `SEED` (keeping the `.qsf`'s own `NUM_PARALLEL_PROCESSORS`) → pin the build date → `quartus_sh --flow compile` → `quartus_sta -t seedy_sta.tcl`: per-clock, per-corner slack and TNS, f(MAX), the worst paths, and the paths from/to watched registers. |
-| aggregate | Merges the shards. It **fails loudly if any seed is missing**, so 27 seeds are never silently compared with 30. |
+| aggregate | Merges the jobs' records. It **fails loudly if any seed is missing**, so 27 seeds are never silently compared with 30. |
 | compare | Seeds are unpaired samples. Seedy uses Fisher's exact test for timing-met counts, a permutation test (20,000 shuffles, fixed RNG) for every metric, a bootstrap CI for median shifts, newly failing clock domains and endpoint families, and the watched-register worst slack. |
 | report | Writes the PR comment and job summary, CSV/JSON artifacts, and the best seed's `.rbf`. A separate `workflow_run` job posts the comment, so fork PRs never touch a write token. |
 

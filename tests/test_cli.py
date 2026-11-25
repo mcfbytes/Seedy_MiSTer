@@ -82,7 +82,15 @@ class CliTest(unittest.TestCase):
     def test_plan_seed_count(self):
         out = dict(l.split("=", 1) for l in run("plan", "--seed-count", "8", "--shards", "3").splitlines())
         self.assertEqual(out["seeds"], "1-8")
-        self.assertEqual(len(json.loads(out["matrix"])["include"]), 6)
+        self.assertEqual(len(json.loads(out["matrix"])["include"]), 6)  # older shards: per variant
+        out = dict(l.split("=", 1) for l in run("plan", "--seed-count", "8", "--jobs", "max").splitlines())
+        self.assertEqual((out["jobs"], len(json.loads(out["matrix"])["include"])), ("16", 16))
+        with self.assertRaises(SystemExit):
+            run("plan", "--seed-count", "8", "--jobs", "0")
+
+    def test_expand_work(self):
+        self.assertEqual(run("expand-work", "baseline=1,3;candidate=3").splitlines(),
+                         ["baseline 1", "baseline 3", "candidate 3"])
 
 
 if __name__ == "__main__":

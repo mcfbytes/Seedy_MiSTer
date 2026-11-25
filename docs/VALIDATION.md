@@ -80,4 +80,6 @@ still to do.
   the baseline cache hit on a re-run.
 - **Hosted runner disk and time:** the free-disk step and `shards: 10` assume ~14 GB free and ~20 min per compile
   at 2 concurrent; both still need measuring.
+- **Mixed-variant jobs and `SEEDY_SLOTS`:** tested with a stand-in `docker` (interleaving, records, slot limit
+  across two jobs, slot freed when a job is killed); not yet on a real multi-runner run.
 - **Quartus versions other than 17.0.2:** the image digests are pinned, but those versions haven't been run here.

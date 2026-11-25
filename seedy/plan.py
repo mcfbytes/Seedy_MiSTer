@@ -1,6 +1,7 @@
 """Seed lists, sharding and the baseline cache key."""
 import hashlib
 import json
+import re
 
 from seedy import __version__
 
@@ -58,10 +59,65 @@ def cache_key(*, project, revision, baseline_sha, image, seeds, threads, build_e
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
-def matrix(seeds, shards, variants):
-    """GitHub Actions matrix include list: one entry per variant x shard."""
+MAX_JOBS = 256  # GitHub Actions' limit on jobs in one matrix
+
+
+def parse_jobs(jobs, shards, variants):
+    """The `jobs` input: a positive number, "max" (one seed per job), or empty for the older
+    per-variant `shards` (shards x variants jobs). Returns an int or "max"."""
+    jobs = str(jobs or "").strip().lower()
+    if not jobs:
+        return max(1, int(shards)) * max(1, len(variants))
+    if jobs == "max":
+        return "max"
+    if not jobs.isdigit() or int(jobs) < 1:
+        raise ValueError(f"jobs must be a positive number or max, not {jobs!r}")
+    return int(jobs)
+
+
+def split_work(seeds, variants, jobs):
+    """Split every (variant, seed) compile into at most `jobs` lists, each mixing the variants.
+
+    While there are no more jobs than seeds, seeds go round-robin to jobs (as `shard` does) and each
+    job compiles every variant of its seeds, so baseline and candidate share each runner and drain
+    together. With more jobs than seeds the compiles themselves go round-robin, down to one per job.
+    Each list is in run order: seed by seed, the variants of a seed one after the other."""
+    items = [(v, s) for s in seeds for v in variants]
+    n = len(items) if jobs == "max" else int(jobs)
+    n = max(1, min(n, len(items), MAX_JOBS))
+    if n <= len(seeds):
+        return [[(v, s) for s in ss for v in variants] for ss in shard(seeds, n)]
+    return [items[i::n] for i in range(n)]
+
+
+def format_work(items):
+    """[("baseline", 1), ("candidate", 1), ("baseline", 3)] -> 'baseline=1,3;candidate=1'."""
+    order = list(dict.fromkeys(v for v, _ in items))
+    return ";".join(f"{v}={format_seeds([s for vv, s in items if vv == v])}" for v in order)
+
+
+def parse_work(spec):
+    """Inverse of format_work, in run order: seed by seed, variants in the order the spec names them."""
+    by = {}
+    for part in str(spec).split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        v, _, seeds = part.partition("=")
+        if not re.fullmatch(r"[a-z]+", v) or not seeds:
+            raise ValueError(f"bad work item {part!r}; want variant=seeds")
+        if v in by:
+            raise ValueError(f"variant {v!r} named twice")
+        by[v] = set(parse_seeds(seeds))
+    if not by:
+        raise ValueError(f"empty work list {spec!r}")
+    return [(v, s) for s in sorted(set().union(*by.values())) for v in by if s in by[v]]
+
+
+def matrix(seeds, jobs, variants):
+    """GitHub Actions matrix include list: one entry per job, each a mix of variants."""
     inc = []
-    for v in variants:
-        for i, ss in enumerate(shard(seeds, shards)):
-            inc.append({"variant": v, "shard": i, "seeds": format_seeds(ss)})
+    for i, items in enumerate(split_work(seeds, variants, jobs)):
+        work = format_work(items)
+        inc.append({"shard": i, "work": work, "label": work.replace("=", " ").replace(";", " + ")})
     return {"include": inc}

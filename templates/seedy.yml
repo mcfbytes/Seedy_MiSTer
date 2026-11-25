@@ -71,6 +71,8 @@ jobs:
       # watch_registers: |
       #   *ramimg*
       # Self-hosted (see README): runs_on: '["self-hosted", "linux", "quartus"]'
+      #   jobs: 4                # compile jobs in total: one per runner instance, or max (one seed per job)
+      #   Leave light_runs_on at its GitHub-hosted default, so bookkeeping never queues behind a compile.
     # secrets:
     #   dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
     #   dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}

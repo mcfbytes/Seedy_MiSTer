@@ -66,12 +66,23 @@ on:
         description: Full Docker image override (pin by digest); empty = theypsilon/quartus-lite-c5 for quartus_version.
         type: string
         default: ""
+      jobs:
+        description: >-
+          Compile jobs in total. Every job compiles both variants of its seeds, so any number of runners shares the
+          work evenly, also when the baseline is cached. A number: the runner instances you have (self-hosted), or
+          the account's concurrent-job limit (GitHub-hosted, 20 on the free plan). "max": one seed per job, at most
+          256, and GitHub hands each seed to whichever runner frees up first; hunts can't stop early this way.
+          Empty = shards x variants.
+        type: string
+        default: ""
       shards:
-        description: Parallel compile jobs per variant; seeds are split round-robin.
+        description: Older setting, used when jobs is empty; compile jobs per variant.
         type: number
         default: 10
       per_job_concurrency:
-        description: Compiles in flight inside one job; "auto" = from RAM (~7 GB each) and CPUs.
+        description: >-
+          Compiles in flight inside one job; "auto" = from RAM (~7 GB each) and CPUs, or, when the runner sets
+          SEEDY_SLOTS (a machine-wide compile limit shared by every Seedy job on it), that number.
         type: string
         default: auto
       threads_per_compile:
@@ -114,7 +125,9 @@ on:
         type: string
         default: '["ubuntu-26.04"]'
       light_runs_on:
-        description: JSON runner labels for the short plan/aggregate jobs.
+        description: >-
+          JSON runner labels for the short plan/aggregate jobs. Keep them off the compile runners: there, a
+          20-second aggregate waits behind whatever multi-hour compile holds the runner.
         type: string
         default: '["ubuntu-26.04"]'
       compile_timeout:
@@ -204,6 +217,12 @@ jobs:
                        "ubuntu-* runners. Use workflow_dispatch from a trusted branch instead.")
           PY
 
+      - name: Warn when the bookkeeping jobs share the compile runners
+        if: inputs.light_runs_on == inputs.runs_on && !startsWith(inputs.runs_on, '["ubuntu-')
+        run: >-
+          echo "::warning::light_runs_on is the same as runs_on, so aggregate can wait hours behind another run's
+          compile job and may be cancelled. Use GitHub-hosted runners (the default) or a separate runner label."
+
       - name: Resolve refs, project and image
         id: refs
         working-directory: core
@@ -267,16 +286,20 @@ jobs:
           SEEDS: ${{ inputs.seeds }}
           COUNT: ${{ inputs.seed_count }}
           SHARDS: ${{ inputs.shards }}
+          JOBS: ${{ inputs.jobs }}
           THREADS: ${{ inputs.threads_per_compile }}
           MODE: ${{ steps.refs.outputs.mode }}
           START: ${{ inputs.seed_start }}
           MAX: ${{ inputs.max_seeds }}
         run: |
           set -euo pipefail
+          if [ "$MODE" = hunt ] && [ "${JOBS,,}" = max ]; then
+            echo "::warning::jobs: max gives every seed its own job, so this hunt can't stop early; it compiles every seed"
+          fi
           if [ "$MODE" = hunt ]; then list="${SEEDS:-$START-$((START + MAX - 1))}"
           # otherwise always measure the seed each variant's .qsf ships with
           else list="${SEEDS:-1-$COUNT},${{ steps.refs.outputs.base_seed }},${{ steps.refs.outputs.cand_seed }}"; fi
-          python3 -m seedy plan --seeds "$list" --shards "$SHARDS" --variants "${{ steps.refs.outputs.variants }}" \
+          python3 -m seedy plan --seeds "$list" --jobs "$JOBS" --shards "$SHARDS" --variants "${{ steps.refs.outputs.variants }}" \
             --project "${{ steps.refs.outputs.project }}" --revision "${{ steps.refs.outputs.revision }}" \
             --baseline-sha "${{ steps.refs.outputs.baseline_sha }}" --image "${{ steps.refs.outputs.image }}" \
             --threads "$THREADS" --build-epoch "${{ steps.refs.outputs.build_epoch }}" \
@@ -300,8 +323,10 @@ jobs:
       - name: Final matrix
         id: matrix
         if: steps.cache.outputs.hit == 'true'
+        env:
+          JOBS: ${{ inputs.jobs }}
         run: |
-          python3 -m seedy plan --seeds "${{ steps.plan.outputs.seeds }}" --shards "${{ inputs.shards }}" \
+          python3 -m seedy plan --seeds "${{ steps.plan.outputs.seeds }}" --jobs "$JOBS" --shards "${{ inputs.shards }}" \
             --variants candidate | grep '^matrix=' >> "$GITHUB_OUTPUT"
           echo "Baseline served from seedy-data (key ${{ steps.plan.outputs.cache_key }})" >> "$GITHUB_STEP_SUMMARY"
 
@@ -373,7 +398,7 @@ jobs:
 
   compile:
     needs: plan
-    name: compile ${{ matrix.variant }} ${{ matrix.seeds }}
+    name: compile ${{ matrix.label }}
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: ${{ inputs.job_timeout_minutes }}
     permissions:
@@ -400,7 +425,7 @@ jobs:
         run: |
           command -v docker >/dev/null || { echo "::error::Seedy needs Docker on the runner"; exit 1; }
           python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version' || { echo "::error::Seedy needs python3 >= 3.10"; exit 1; }
-          echo "CPUs $(nproc); $(grep MemAvailable /proc/meminfo)"
+          echo "CPUs $(nproc); $(grep MemAvailable /proc/meminfo); SEEDY_SLOTS=${SEEDY_SLOTS:-unset}"
 
       - name: Seedy scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -410,11 +435,21 @@ jobs:
           path: .seedy
           persist-credentials: false
 
-      - name: Source at ${{ matrix.variant }}
+      # each job compiles both variants of its seeds (see seedy/plan.py split_work)
+      - name: Source at baseline
+        if: contains(format(';{0}', matrix.work), ';baseline=')
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ matrix.variant == 'baseline' && needs.plan.outputs.baseline_sha || needs.plan.outputs.candidate_sha }}
-          path: core
+          ref: ${{ needs.plan.outputs.baseline_sha }}
+          path: core-baseline
+          persist-credentials: false
+
+      - name: Source at candidate
+        if: contains(format(';{0}', matrix.work), ';candidate=')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.candidate_sha }}
+          path: core-candidate
           persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -429,48 +464,59 @@ jobs:
           username: ${{ secrets.dockerhub_username }}
           password: ${{ secrets.dockerhub_token }}
 
-      - name: Pull Quartus image
-        run: docker pull --quiet "${{ needs.plan.outputs.image }}"
-
-      - name: Compile seeds ${{ matrix.seeds }}
+      - name: Pull Quartus image (skipped when this runner already has it)
         env:
-          VARIANT: ${{ matrix.variant }}
+          IMAGE: ${{ needs.plan.outputs.image }}
+        # the image is pinned by digest, so a local copy is exactly it; skipping the pull also keeps
+        # many small jobs (jobs: max) from spending Docker Hub's pull allowance on manifest checks
+        run: |
+          if docker image inspect "$IMAGE" >/dev/null 2>&1; then echo "have $IMAGE"; else docker pull --quiet "$IMAGE"; fi
+
+      - name: Compile ${{ matrix.label }}
+        env:
+          WORK_ITEMS: ${{ matrix.work }}
           SHARD: ${{ matrix.shard }}
-          SHA: ${{ matrix.variant == 'baseline' && needs.plan.outputs.baseline_sha || needs.plan.outputs.candidate_sha }}
+          BASE_SHA: ${{ needs.plan.outputs.baseline_sha }}
+          CAND_SHA: ${{ needs.plan.outputs.candidate_sha }}
         run: |
           set -euo pipefail
           # git archive, not the working tree, so .gitattributes/line-ending drift can't differ
-          git -C core archive --format=tar HEAD -o "$RUNNER_TEMP/src.tar"
+          srcs=()
+          for v in baseline candidate; do
+            [ -d "core-$v" ] || continue
+            git -C "core-$v" archive --format=tar HEAD -o "$RUNNER_TEMP/src-$v.tar"
+            srcs+=(--src "$v=$RUNNER_TEMP/src-$v.tar")
+          done
           keep=none; [ "${{ inputs.keep_rbf }}" != none ] && keep=all
           hunt=()
           if [ "${{ needs.plan.outputs.mode }}" = hunt ]; then
             shards=$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["include"]))' '${{ needs.plan.outputs.matrix }}')
             hunt=(--stop-after-met $(( (${{ inputs.min_met }} + shards - 1) / shards )) --deadline $(( $(date +%s) + ${{ inputs.hunt_minutes }} * 60 )))
           fi
-          .seedy/quartus/compile-shard.sh --src "$RUNNER_TEMP/src.tar" --variant "$VARIANT" --seeds "${{ matrix.seeds }}" \
+          .seedy/quartus/compile-shard.sh "${srcs[@]}" --items "$WORK_ITEMS" --sha "baseline=$BASE_SHA" --sha "candidate=$CAND_SHA" \
             --project "${{ needs.plan.outputs.project }}" --revision "${{ needs.plan.outputs.revision }}" \
             --image "${{ needs.plan.outputs.image }}" --concurrency "${{ inputs.per_job_concurrency }}" \
             --threads "${{ inputs.threads_per_compile }}" --npaths "${{ inputs.worst_paths }}" \
             --watch-file plan/watch.txt --build-epoch "${{ needs.plan.outputs.build_epoch }}" --keep-rbf "$keep" \
             --keep-reports "${{ inputs.keep_reports && 'yes' || 'no' }}" \
             --timeout "${{ inputs.compile_timeout }}" --work "$RUNNER_TEMP/work" --out "$RUNNER_TEMP/out" \
-            --name "seedy-${{ github.run_id }}-${{ github.run_attempt }}-$VARIANT-$SHARD" \
+            --name "seedy-${{ github.run_id }}-${{ github.run_attempt }}-$SHARD" \
             --peak-gb "${{ inputs.compile_peak_gb }}" "${hunt[@]}" \
-            --meta "{\"sha\": \"$SHA\", \"runner\": \"${{ runner.name }}\", \"runner_environment\": \"${{ runner.environment }}\"}"
+            --meta "{\"runner\": \"${{ runner.name }}\", \"runner_environment\": \"${{ runner.environment }}\"}"
 
       - name: Remove this job's Quartus containers (also on cancel)
         # compile-shard.sh removes its containers on exit, but a cancelled job can be killed before that
-        # trap runs, leaving compiles running on a self-hosted box. The names carry run, attempt, variant
-        # and shard, so only this job's containers match.
+        # trap runs, leaving compiles running on a self-hosted box. The names carry run, attempt and
+        # shard (then variant and seed), so only this job's containers match.
         if: always()
         env:
-          PREFIX: seedy-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant }}-${{ matrix.shard }}-s
-        run: docker ps -aq --filter "name=^${PREFIX}[0-9]+\$" | xargs -r docker rm -f
+          PREFIX: seedy-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}-
+        run: docker ps -aq --filter "name=^${PREFIX}[a-z]+-s[0-9]+\$" | xargs -r docker rm -f
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: seedy-shard-${{ matrix.variant }}-${{ matrix.shard }}
+          name: seedy-shard-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/out/records/
             ${{ runner.temp }}/out/logs/
@@ -480,7 +526,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always() && inputs.keep_reports
         with:
-          name: seedy-reportshard-${{ matrix.variant }}-${{ matrix.shard }}
+          name: seedy-reportshard-${{ matrix.shard }}
           path: ${{ runner.temp }}/out/reports/
           retention-days: 1
           if-no-files-found: ignore
@@ -489,7 +535,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: inputs.keep_rbf != 'none'
         with:
-          name: seedy-rbfshard-${{ matrix.variant }}-${{ matrix.shard }}
+          name: seedy-rbfshard-${{ matrix.shard }}
           path: ${{ runner.temp }}/out/rbf/
           retention-days: 1
           if-no-files-found: ignore

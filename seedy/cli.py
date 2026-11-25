@@ -37,8 +37,13 @@ def _dump(obj, path):
 def cmd_plan(a):
     seeds = plan.parse_seeds(a.seeds or f"1-{a.seed_count}")
     variants = [v for v in a.variants.split(",") if v]
-    out = {"seeds": plan.format_seeds(seeds), "count": len(seeds),
-           "matrix": json.dumps(plan.matrix(seeds, a.shards, variants), separators=(",", ":"))}
+    try:
+        jobs = plan.parse_jobs(a.jobs, a.shards, variants)
+    except ValueError as e:
+        sys.exit(str(e))
+    m = plan.matrix(seeds, jobs, variants)
+    out = {"seeds": plan.format_seeds(seeds), "count": len(seeds), "jobs": len(m["include"]),
+           "matrix": json.dumps(m, separators=(",", ":"))}
     if a.baseline_sha:
         out["cache_key"] = plan.cache_key(project=a.project, revision=a.revision, baseline_sha=a.baseline_sha,
                                           image=a.image, seeds=seeds, threads=a.threads, build_epoch=a.build_epoch,
@@ -49,6 +54,15 @@ def cmd_plan(a):
 
 def cmd_expand_seeds(a):
     print(" ".join(str(x) for x in plan.parse_seeds(a.seeds)))
+
+
+def cmd_expand_work(a):
+    try:
+        items = plan.parse_work(a.work)
+    except ValueError as e:
+        sys.exit(str(e))
+    for v, s in items:
+        print(v, s)
 
 
 def cmd_concurrency(a):
@@ -233,7 +247,8 @@ def main(argv=None):
     p = sub.add_parser("plan", help="normalise seeds, build the shard matrix and the baseline cache key")
     p.add_argument("--seeds", default="", help="explicit list, e.g. 1-8,13 (overrides --seed-count)")
     p.add_argument("--seed-count", type=int, default=30, help="use seeds 1..N")
-    p.add_argument("--shards", type=int, default=10)
+    p.add_argument("--jobs", default="", help="compile jobs in total, or max (one seed per job); empty = shards x variants")
+    p.add_argument("--shards", type=int, default=10, help="older setting: jobs per variant, used when --jobs is empty")
     p.add_argument("--variants", default="baseline,candidate")
     p.add_argument("--project", default="")
     p.add_argument("--revision", default="")
@@ -247,6 +262,10 @@ def main(argv=None):
     p = sub.add_parser("expand-seeds", help="'1-3,7' -> '1 2 3 7' (for shell loops)")
     p.add_argument("seeds")
     p.set_defaults(fn=cmd_expand_seeds)
+
+    p = sub.add_parser("expand-work", help="'baseline=1,3;candidate=1' -> one 'variant seed' line per compile, in run order")
+    p.add_argument("work")
+    p.set_defaults(fn=cmd_expand_work)
 
     p = sub.add_parser("concurrency", help="compiles that fit on this machine")
     p.add_argument("--threads", type=int, default=0, help="NUM_PARALLEL_PROCESSORS override; 0 = the .qsf's own")
