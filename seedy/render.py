@@ -293,6 +293,32 @@ def _best_line(tag, best, rec, why):
             f"worst slack {f3(seedpick._worst_slack(h))} ns).")
 
 
+def _reference_lines(merged, ranked):
+    """A hunt's single compile of the released commit at its shipped seed: a point of comparison, not a test."""
+    meta = merged["meta"]
+    refs, gone = merged.get("reference", []), meta.get("reference_missing", [])
+    if not refs and not gone:
+        return []
+    out = []
+    for r in refs:
+        who = f"{_ref(meta.get(r['variant'], {'label': r['variant']}))} with its `.qsf` seed {r['seed']}"
+        h = r.get("headline") or {}
+        if r.get("status") != "ok" or not h:
+            out.append(f"- **For comparison**, {who}: did not compile ({r.get('status', '?')}).")
+            continue
+        state = "meets timing" if h.get("timing_met") else "does not meet timing"
+        line = (f"- **For comparison**, {who} {state}: worst slack {f3(seedpick._worst_slack(h))} ns "
+                f"(setup {f3(h.get('setup'))}, hold {f3(h.get('hold'))}).")
+        if ranked:
+            line += f" This commit's best seed {ranked[0]['seed']}: {f3(seedpick._worst_slack(ranked[0]['headline']))} ns."
+        out.append(line)
+    for g in gone:
+        out.append(f"- The comparison compile of {g['variant']} seed {g['seed']} is missing; see the run's job logs.")
+    out.append("- One seed is one random draw: this shows how the released build fared, not whether this commit is "
+               "harder to fit. Run compare mode to measure that.")
+    return out
+
+
 def _shipped_note(decision, ranked):
     """Put the recommendation in proportion when the .qsf's own seed already closes."""
     shipped, best = decision.get("shipped"), decision.get("best")
@@ -631,6 +657,9 @@ def single(merged, decision, run_url=None, status_lines=()):
     out.append(f"Seeds meeting timing: {', '.join(map(str, met)) if met else 'none'}.")
     out.append("")
     ranked = seedpick.rank(ok)
+    ref_lines = _reference_lines(merged, ranked)
+    if ref_lines:
+        out += ref_lines + [""]
     if decision.get("best") is not None:
         tag = "Recommended seed" if decision["best_met"] else "Closest seed (none met timing)"
         rec = next((r for r in ranked if r["seed"] == decision["best"]), None)

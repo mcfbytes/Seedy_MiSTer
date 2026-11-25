@@ -129,7 +129,17 @@ On some cores (Saturn and PSX are the usual suspects) most seeds fail timing. Th
   slack. You also get the clocks that fail and how often, and the endpoints that keep failing. That is the
   to-do list for fixing the design rather than rolling more dice.
 * With `override_seed: if-failing`, a hunt that finds a closing seed commits it, unless the hunt showed the
-  `.qsf`'s current seed already closes. Seedy knows that only when the current seed was in the hunted range.
+  `.qsf`'s current seed already closes. Seedy knows that only when the current seed was compiled: in the hunted
+  range, or with `reference: shipped`.
+* **`reference: shipped`** (the default for manual hunts in the template) adds two compiles that start before
+  anything else and always run:
+  * your branch at its `.qsf` seed. If that seed meets timing, the hunt can stop right there and the `.qsf`
+    doesn't change. Don't count on it, though: any change to the design reshuffles the fit, so last release's
+    seed has about the same odds as any other seed.
+  * the baseline commit (the default branch, or `baseline_ref`) once, at *its* `.qsf` seed. That is the seed of
+    the released build, so the report can say *"the release's seed 1 has −0.515 ns; this branch's best seed 18
+    has +0.078 ns"*. One seed is one random draw, so this is a point of comparison, not a regression test. Use
+    compare mode for that.
 * If a compile job crashes or times out, the report says so. It never passes off lost seeds as "not started".
 
 **How the stop works with several jobs.** GitHub Actions jobs can't signal each other while they run, so each

@@ -30,6 +30,13 @@ on:
         description: "hunt: first seed; continue an earlier hunt from where it stopped."
         type: number
         default: 1
+      reference:
+        description: >-
+          hunt: shipped = compile this commit at its .qsf seed first (if that seed closes, the hunt can stop there and
+          the .qsf stays as it is) and the baseline commit once at its .qsf seed, a single point of comparison with the
+          released build. none = only the hunted seeds. Compare mode always does both anyway.
+        type: string
+        default: none
       hunt_minutes:
         description: "hunt: no new compile starts if it would run past this many minutes into the job."
         type: number
@@ -165,6 +172,7 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix || steps.plan.outputs.matrix }}
       seeds: ${{ steps.plan.outputs.seeds }}
+      reference: ${{ steps.plan.outputs.reference }}
       variants: ${{ steps.refs.outputs.variants }}
       mode: ${{ steps.refs.outputs.mode }}
       image: ${{ steps.refs.outputs.image }}
@@ -291,15 +299,27 @@ jobs:
           MODE: ${{ steps.refs.outputs.mode }}
           START: ${{ inputs.seed_start }}
           MAX: ${{ inputs.max_seeds }}
+          REFERENCE: ${{ inputs.reference }}
+          BASE_SEED: ${{ steps.refs.outputs.base_seed }}
+          CAND_SEED: ${{ steps.refs.outputs.cand_seed }}
         run: |
           set -euo pipefail
+          case "$REFERENCE" in none|shipped) ;; *) echo "::error::reference must be none or shipped"; exit 1;; esac
+          first="" reference=""
+          if [ "$MODE" = hunt ] && [ "$REFERENCE" = shipped ]; then
+            # this commit's own seed first (a hunt may stop on it), then the released commit once at its seed
+            first="candidate:$CAND_SEED,baseline:$BASE_SEED" reference="baseline:$BASE_SEED"
+          elif [ "$REFERENCE" = shipped ]; then
+            echo "::notice::reference only applies to hunts; $MODE runs measure both shipped seeds already"
+          fi
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
           if [ "$MODE" = hunt ] && [ "${JOBS,,}" = max ]; then
             echo "::warning::jobs: max gives every seed its own job, so this hunt can't stop early; it compiles every seed"
           fi
-          if [ "$MODE" = hunt ]; then list="${SEEDS:-$START-$((START + MAX - 1))}"
+          if [ "$MODE" = hunt ]; then list="${SEEDS:-$START-$((START + MAX - 1))}"; [ -n "$first" ] && list="$list,$CAND_SEED"
           # otherwise always measure the seed each variant's .qsf ships with
           else list="${SEEDS:-1-$COUNT},${{ steps.refs.outputs.base_seed }},${{ steps.refs.outputs.cand_seed }}"; fi
-          python3 -m seedy plan --seeds "$list" --jobs "$JOBS" --shards "$SHARDS" --variants "${{ steps.refs.outputs.variants }}" \
+          python3 -m seedy plan --seeds "$list" --jobs "$JOBS" --shards "$SHARDS" --variants "${{ steps.refs.outputs.variants }}" --first "$first" \
             --project "${{ steps.refs.outputs.project }}" --revision "${{ steps.refs.outputs.revision }}" \
             --baseline-sha "${{ steps.refs.outputs.baseline_sha }}" --image "${{ steps.refs.outputs.image }}" \
             --threads "$THREADS" --build-epoch "${{ steps.refs.outputs.build_epoch }}" \
@@ -356,6 +376,7 @@ jobs:
           R_EPOCH: ${{ steps.refs.outputs.build_epoch }}
           P_SEEDS: ${{ steps.plan.outputs.seeds }}
           P_KEY: ${{ steps.plan.outputs.cache_key }}
+          P_REFERENCE: ${{ steps.plan.outputs.reference }}
           C_HIT: ${{ steps.cache.outputs.hit }}
         run: |
           mkdir -p plan
@@ -374,6 +395,7 @@ jobs:
             "baseline_cached": e["C_HIT"] == "true", "build_epoch": int(e["R_EPOCH"]), "threads": int(e["THREADS"]),
             "watch_registers": [l.strip() for l in e["WATCH"].splitlines() if l.strip()],
             "seed_policy": e["POLICY"], "keep_rbf": e["KEEP_RBF"], "min_met": int(e["MIN_MET"]),
+            "reference": e["P_REFERENCE"],
             "rbf_artifact": "seedy-rbf" if e["KEEP_RBF"] != "none" else "",
             "run_url": e["RUN_URL"], "event": e["EVENT"],
             "changed_paths": diff.stdout.splitlines() if diff.returncode == 0 else None,
@@ -475,6 +497,7 @@ jobs:
       - name: Compile ${{ matrix.label }}
         env:
           WORK_ITEMS: ${{ matrix.work }}
+          FIRST: ${{ matrix.first }}
           SHARD: ${{ matrix.shard }}
           BASE_SHA: ${{ needs.plan.outputs.baseline_sha }}
           CAND_SHA: ${{ needs.plan.outputs.candidate_sha }}
@@ -491,9 +514,9 @@ jobs:
           hunt=()
           if [ "${{ needs.plan.outputs.mode }}" = hunt ]; then
             shards=$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["include"]))' '${{ needs.plan.outputs.matrix }}')
-            hunt=(--stop-after-met $(( (${{ inputs.min_met }} + shards - 1) / shards )) --deadline $(( $(date +%s) + ${{ inputs.hunt_minutes }} * 60 )))
+            hunt=(--stop-variant candidate --stop-after-met $(( (${{ inputs.min_met }} + shards - 1) / shards )) --deadline $(( $(date +%s) + ${{ inputs.hunt_minutes }} * 60 )))
           fi
-          .seedy/quartus/compile-shard.sh "${srcs[@]}" --items "$WORK_ITEMS" --sha "baseline=$BASE_SHA" --sha "candidate=$CAND_SHA" \
+          .seedy/quartus/compile-shard.sh "${srcs[@]}" --items "$WORK_ITEMS" --first "$FIRST" --sha "baseline=$BASE_SHA" --sha "candidate=$CAND_SHA" \
             --project "${{ needs.plan.outputs.project }}" --revision "${{ needs.plan.outputs.revision }}" \
             --image "${{ needs.plan.outputs.image }}" --concurrency "${{ inputs.per_job_concurrency }}" \
             --threads "${{ inputs.threads_per_compile }}" --npaths "${{ inputs.worst_paths }}" \
@@ -601,6 +624,7 @@ jobs:
             fi
           fi
           python3 -m seedy aggregate shards --seeds "${{ needs.plan.outputs.seeds }}" "${partial[@]}" \
+            --reference "${{ needs.plan.outputs.reference }}" \
             --variants "${{ needs.plan.outputs.variants }}" --meta plan/meta.json --out results/merged.json
 
       - name: Compare and render

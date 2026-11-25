@@ -114,10 +114,52 @@ def parse_work(spec):
     return [(v, s) for s in sorted(set().union(*by.values())) for v in by if s in by[v]]
 
 
-def matrix(seeds, jobs, variants):
-    """GitHub Actions matrix include list: one entry per job, each a mix of variants."""
+def parse_first(spec):
+    """'candidate:7,baseline:1' -> [("candidate", 7), ("baseline", 1)], order kept, duplicates dropped."""
+    out = []
+    for part in str(spec or "").replace(" ", "").split(","):
+        if not part:
+            continue
+        v, _, seed = part.partition(":")
+        if not re.fullmatch(r"[a-z]+", v) or not seed.isdigit() or int(seed) < 1:
+            raise ValueError(f"bad item {part!r}; want variant:seed")
+        if (v, int(seed)) not in out:
+            out.append((v, int(seed)))
+    return out
+
+
+def format_first(items):
+    return ",".join(f"{v}:{s}" for v, s in items)
+
+
+def split_with_first(seeds, variants, jobs, first=()):
+    """split_work, then the `first` compiles (hunt references) go to the front of the jobs, one per
+    job in turn, so they start before anything else. Returns [(items, first_items)] per job."""
+    first = list(dict.fromkeys(first))
+    groups = [[x for x in g if x not in first] for g in split_work(seeds, variants, jobs)] if seeds else []
+    groups = [g for g in groups if g] or [[]]
+    heads = [[] for _ in groups]
+    for i, x in enumerate(first):
+        heads[i % len(groups)].append(x)
+    return [(h + g, h) for h, g in zip(heads, groups) if h + g]
+
+
+def order_work(items, first=()):
+    """Run order for one job: the `first` items it holds, in the order given, then the rest."""
+    head = [x for x in first if x in items]
+    return head + [x for x in items if x not in head]
+
+
+def matrix(seeds, jobs, variants, first=()):
+    """GitHub Actions matrix include list: one entry per job, each a mix of variants. `first`
+    (variant, seed) compiles run at the front of their jobs, even past a hunt's stop."""
     inc = []
-    for i, items in enumerate(split_work(seeds, variants, jobs)):
+    for i, (items, head) in enumerate(split_with_first(seeds, variants, jobs, first)):
         work = format_work(items)
-        inc.append({"shard": i, "work": work, "label": work.replace("=", " ").replace(";", " + ")})
+        label = work.replace("=", " ").replace(";", " + ")
+        entry = {"shard": i, "work": work, "label": label}
+        if head:
+            entry["first"] = format_first(head)
+            entry["label"] = f"{label} (first {' '.join(f'{v} {s}' for v, s in head)})"
+        inc.append(entry)
     return {"include": inc}

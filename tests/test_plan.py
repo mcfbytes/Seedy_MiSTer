@@ -60,6 +60,23 @@ class PlanTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 plan.parse_work(bad)
 
+    def test_first_items_lead_their_jobs(self):
+        first = [("candidate", 7), ("baseline", 1)]
+        jobs = plan.split_with_first(list(range(1, 11)), ["candidate"], 2, first)
+        self.assertEqual([h for _, h in jobs], [[("candidate", 7)], [("baseline", 1)]])
+        everything = sorted(x for items, _ in jobs for x in items)
+        self.assertEqual(everything, sorted([("candidate", s) for s in range(1, 11)] + [("baseline", 1)]))
+        self.assertEqual(jobs[0][0][0], ("candidate", 7))  # not compiled twice, and first
+        self.assertEqual(sum(x == ("candidate", 7) for items, _ in jobs for x in items), 1)
+        one = plan.split_with_first([1, 2], ["candidate"], 1, first)
+        self.assertEqual(one[0][0][:2], first)
+        m = plan.matrix([1, 2], 1, ["candidate"], first)["include"][0]
+        self.assertEqual((m["work"], m["first"]), ("candidate=1-2,7;baseline=1", "candidate:7,baseline:1"))
+        self.assertEqual(plan.order_work(plan.parse_work(m["work"]), plan.parse_first(m["first"]))[:2], first)
+        for bad in ("candidate", "candidate:0", "Cand:1", "candidate:x"):
+            with self.assertRaises(ValueError):
+                plan.parse_first(bad)
+
     def test_parse_jobs(self):
         vs = ["baseline", "candidate"]
         self.assertEqual(plan.parse_jobs("", 10, vs), 20)  # the older per-variant shards

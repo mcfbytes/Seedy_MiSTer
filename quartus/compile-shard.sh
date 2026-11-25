@@ -20,19 +20,21 @@
 # Hunt mode (hard-to-close cores): seeds are tried in the order given, and no new seed starts once
 #   --stop-after-met K   K seeds of this shard have met timing, or
 #   --deadline EPOCH     a new compile would likely run past this time (uses the slowest compile so far).
+#   --stop-variant V     count only V's seeds toward --stop-after-met (default: every variant).
+#   --first 'v:s,...'    compile these first, in this order, and never skip them for a stop (hunt references).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-SRC_ARGS=() SHA_ARGS=() WORK_SPEC= VARIANT= SEEDS= OUT= PROJECT= REVISION= IMAGE=theypsilon/quartus-lite-c5:17.0.2
+SRC_ARGS=() SHA_ARGS=() FIRST= STOP_VARIANT= WORK_SPEC= VARIANT= SEEDS= OUT= PROJECT= REVISION= IMAGE=theypsilon/quartus-lite-c5:17.0.2
 CONC=auto THREADS=0 NPATHS=40 WATCH= EPOCH= KEEP_RBF=none KEEP_REPORTS=no NAME= TIMEOUT=4h META='{}' STOP_MET=0 DEADLINE=0 PEAK_GB=7
 WORK= SLOTS=${SEEDY_SLOTS:-0} SLOT_DIR=${SEEDY_SLOT_DIR:-/var/tmp/seedy-slots}
 while [ $# -gt 0 ]; do
   case "$1" in
     --src) SRC_ARGS+=("$2");; --sha) SHA_ARGS+=("$2");; --items) WORK_SPEC=$2;;
-    --slots) SLOTS=$2;; --slot-dir) SLOT_DIR=$2;; --variant) VARIANT=$2;; --seeds) SEEDS=$2;; --out) OUT=$2;;
+    --first) FIRST=$2;; --stop-variant) STOP_VARIANT=$2;; --slots) SLOTS=$2;; --slot-dir) SLOT_DIR=$2;; --variant) VARIANT=$2;; --seeds) SEEDS=$2;; --out) OUT=$2;;
     --project) PROJECT=$2;; --revision) REVISION=$2;; --image) IMAGE=$2;;
     --concurrency) CONC=$2;; --threads) THREADS=$2;; --npaths) NPATHS=$2;;
     --watch-file) WATCH=$2;; --build-epoch) EPOCH=$2;; --keep-rbf) KEEP_RBF=$2;; --keep-reports) KEEP_REPORTS=$2;;
@@ -61,7 +63,8 @@ NAME=${NAME:-seedy-shard}
 mkdir -p "$OUT/records" "$OUT/logs"; OUT=$(realpath "$OUT")
 WORK=${WORK:-${RUNNER_TEMP:+$RUNNER_TEMP/seedy-work}}; WORK=${WORK:-$OUT/../seedy-work}
 mkdir -p "$WORK"; WORK=$(realpath "$WORK")
-ITEMS=$(python3 -m seedy expand-work "$WORK_SPEC")   # one "variant seed" line per compile, in run order
+# one "variant seed first|-" line per compile, in run order
+ITEMS=$(python3 -m seedy expand-work "$WORK_SPEC" --first "$FIRST")
 VARIANTS=$(awk '!seen[$1]++ {print $1}' <<<"$ITEMS")
 [ -n "$WATCH" ] && WATCH=$(realpath "$WATCH")
 
@@ -164,10 +167,10 @@ run_seed() {
 }
 
 progress() {   # "<seeds meeting timing> <slowest compile in s>" over this shard's finished records
-  python3 - "$OUT/records" <<'PY'
+  python3 - "$OUT/records" "$STOP_VARIANT" <<'PY'
 import glob, json, os, sys
 met = slowest = 0
-for p in glob.glob(os.path.join(sys.argv[1], "*.json")):
+for p in glob.glob(os.path.join(sys.argv[1], (sys.argv[2] or "*") + "-*.json")):
     try:
         with open(p) as fh:
             r = json.load(fh)
@@ -193,10 +196,10 @@ should_stop() {
 pids=()
 started=()
 single=$([ "$(wc -w <<<"$VARIANTS")" -eq 1 ] && echo yes || echo no)
-while read -r variant seed; do
+while read -r variant seed first; do
   while [ "$(jobs -rp | wc -l)" -ge "$CONC" ]; do wait -n || true; done
   acquire_slot
-  if should_stop; then release_slot; echo "seedy: stopping before $variant seed $seed: $stop_reason"; break; fi
+  if [ "$first" != first ] && should_stop; then release_slot; echo "seedy: stopping before $variant seed $seed: $stop_reason"; break; fi
   run_seed "$variant" "$seed" &
   pids+=($!)
   release_slot   # the child holds the slot now

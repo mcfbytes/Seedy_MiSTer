@@ -39,9 +39,10 @@ def cmd_plan(a):
     variants = [v for v in a.variants.split(",") if v]
     try:
         jobs = plan.parse_jobs(a.jobs, a.shards, variants)
+        first = plan.parse_first(a.first)
     except ValueError as e:
         sys.exit(str(e))
-    m = plan.matrix(seeds, jobs, variants)
+    m = plan.matrix(seeds, jobs, variants, first)
     out = {"seeds": plan.format_seeds(seeds), "count": len(seeds), "jobs": len(m["include"]),
            "matrix": json.dumps(m, separators=(",", ":"))}
     if a.baseline_sha:
@@ -59,10 +60,14 @@ def cmd_expand_seeds(a):
 def cmd_expand_work(a):
     try:
         items = plan.parse_work(a.work)
+        first = plan.parse_first(a.first)
     except ValueError as e:
         sys.exit(str(e))
-    for v, s in items:
-        print(v, s)
+    unknown = [x for x in first if x not in items]
+    if unknown:
+        sys.exit("--first items not in the work list: " + plan.format_first(unknown))
+    for v, s in plan.order_work(items, first):
+        print(v, s, "first" if (v, s) in first else "-")
 
 
 def cmd_concurrency(a):
@@ -116,6 +121,15 @@ def cmd_aggregate(a):
         if key in by:
             sys.exit(f"duplicate record for {key}")
         by[key] = r
+    try:
+        refs = plan.parse_first(a.reference)
+    except ValueError as e:
+        sys.exit(str(e))
+    # reference compiles (a hunt's one run of the released commit) are kept apart from the population
+    reference = [by.pop(k) for k in refs if k[0] not in variants and k in by]
+    ref_missing = [k for k in refs if k[0] not in variants and all((r["variant"], r["seed"]) != k for r in reference)]
+    if ref_missing:
+        print("reference compiles missing: " + plan.format_first(ref_missing), file=sys.stderr)
     missing = [(v, s) for v in variants for s in seeds if (v, s) not in by]
     extra = sorted(k for k in by if k[0] not in variants or k[1] not in seeds)
     if missing and a.allow_partial:
@@ -142,11 +156,16 @@ def cmd_aggregate(a):
     meta["not_run"] = {v: [s for (vv, s) in missing if vv == v] for v in variants}
     if a.incomplete:
         meta["incomplete"] = True
+    if refs:
+        meta["reference_missing"] = [{"variant": v, "seed": s} for v, s in ref_missing]
     versions = sorted({r.get("quartus_version") for r in ordered if r.get("quartus_version")})
     if versions:
         meta["quartus_version"] = "; ".join(versions)
         meta["quartus_version_short"] = versions[0].split(" Build")[0].replace("Version ", "")
-    _dump({"meta": meta, "records": ordered}, a.out)
+    merged = {"meta": meta, "records": ordered}
+    if reference:
+        merged["reference"] = reference
+    _dump(merged, a.out)
     print(f"{len(ordered)} records, {sum(r.get('status') != 'ok' for r in ordered)} failed", file=sys.stderr)
 
 
@@ -250,6 +269,7 @@ def main(argv=None):
     p.add_argument("--jobs", default="", help="compile jobs in total, or max (one seed per job); empty = shards x variants")
     p.add_argument("--shards", type=int, default=10, help="older setting: jobs per variant, used when --jobs is empty")
     p.add_argument("--variants", default="baseline,candidate")
+    p.add_argument("--first", default="", help="variant:seed,... compiled first, e.g. a hunt's references")
     p.add_argument("--project", default="")
     p.add_argument("--revision", default="")
     p.add_argument("--baseline-sha", default="")
@@ -265,6 +285,7 @@ def main(argv=None):
 
     p = sub.add_parser("expand-work", help="'baseline=1,3;candidate=1' -> one 'variant seed' line per compile, in run order")
     p.add_argument("work")
+    p.add_argument("--first", default="", help="variant:seed,... to run before the rest (and always)")
     p.set_defaults(fn=cmd_expand_work)
 
     p = sub.add_parser("concurrency", help="compiles that fit on this machine")
@@ -310,6 +331,7 @@ def main(argv=None):
     p.add_argument("--variants", default="baseline,candidate")
     p.add_argument("--meta", default="")
     p.add_argument("--allow-partial", action="store_true", help="hunt mode: unrun seeds are fine")
+    p.add_argument("--reference", default="", help="variant:seed,... of other variants kept as reference, not compared")
     p.add_argument("--project", default="", help="name shown in the report when no --meta is given")
     p.add_argument("--incomplete", action="store_true",
                    help="some compile jobs failed or timed out: say so instead of 'hunt stopped early'")

@@ -24,6 +24,11 @@ on:
       seed_start:
         description: "hunt: first seed (continue an earlier hunt)"
         default: "1"
+      reference:
+        description: "hunt: try this branch's .qsf seed first, and compile the baseline once at its seed for comparison"
+        type: choice
+        options: [shipped, none]
+        default: shipped
       baseline_ref:
         description: "compare: branch/tag/SHA to compare against (empty = default branch)"
         default: ""
@@ -65,6 +70,7 @@ jobs:
       max_seeds: ${{ fromJSON(inputs.max_seeds || '100') }}
       min_met: ${{ fromJSON(inputs.min_met || '1') }}
       seed_start: ${{ fromJSON(inputs.seed_start || '1') }}
+      reference: ${{ inputs.reference || 'none' }}
       baseline_ref: ${{ inputs.baseline_ref }}
       quartus_version: ${{ inputs.quartus_version || '17.0.2' }}
       override_seed: ${{ inputs.override_seed || 'never' }}

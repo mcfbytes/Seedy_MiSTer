@@ -90,7 +90,36 @@ class CliTest(unittest.TestCase):
 
     def test_expand_work(self):
         self.assertEqual(run("expand-work", "baseline=1,3;candidate=3").splitlines(),
-                         ["baseline 1", "baseline 3", "candidate 3"])
+                         ["baseline 1 -", "baseline 3 -", "candidate 3 -"])
+        self.assertEqual(run("expand-work", "baseline=1,3;candidate=3", "--first", "candidate:3").splitlines(),
+                         ["candidate 3 first", "baseline 1 -", "baseline 3 -"])
+        with self.assertRaises(SystemExit):
+            run("expand-work", "baseline=1", "--first", "candidate:3")
+
+    def test_hunt_with_reference(self):
+        # hunt candidate 1-20 plus the released commit (baseline) once at its seed 1
+        for s in range(21, 31):
+            os.remove(os.path.join(self.d, f"candidate-{s}.json"))
+        for s in range(2, 31):
+            os.remove(os.path.join(self.d, f"baseline-{s}.json"))
+        outd = tempfile.mkdtemp()  # outside the input dir, so the second aggregate doesn't read the first's output
+        m = os.path.join(outd, "m.json")
+        run("aggregate", self.d, "--seeds", "1-20", "--variants", "candidate", "--allow-partial",
+            "--reference", "baseline:1", "--meta", self.meta, "--out", m)
+        merged = json.load(open(m))
+        self.assertEqual(len(merged["records"]), 20)
+        self.assertEqual([(r["variant"], r["seed"]) for r in merged["reference"]], [("baseline", 1)])
+        run("render-single", m, "--out-dir", os.path.join(outd, "r"))
+        c = open(os.path.join(outd, "r", "comment.md")).read()
+        self.assertIn("**For comparison**, master @ c61bfd4 with its `.qsf` seed 1 does not meet timing", c)
+        self.assertIn("This commit's best seed 18", c)
+        # a lost reference compile is reported, never fatal
+        os.remove(os.path.join(self.d, "baseline-1.json"))
+        run("aggregate", self.d, "--seeds", "1-20", "--variants", "candidate", "--allow-partial",
+            "--reference", "baseline:1", "--meta", self.meta, "--out", m)
+        run("render-single", m, "--out-dir", os.path.join(outd, "r"))
+        with open(os.path.join(outd, "r", "comment.md")) as fh:
+            self.assertIn("comparison compile of baseline seed 1 is missing", fh.read())
 
 
 if __name__ == "__main__":
