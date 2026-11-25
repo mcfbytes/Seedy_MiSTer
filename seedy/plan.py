@@ -133,14 +133,17 @@ def format_first(items):
 
 
 def split_with_first(seeds, variants, jobs, first=()):
-    """split_work, then the `first` compiles (hunt references) go to the front of the jobs, one per
-    job in turn, so they start before anything else. Returns [(items, first_items)] per job."""
+    """split_work, then the `first` compiles (hunt references) go to the front of the jobs, each to
+    the job with the fewest compiles so far (the lowest-numbered on a tie), so they start before anything
+    else and keep the jobs even: 31 seeds + 1 reference over 16 jobs is 2 each, one wave.
+    Returns [(items, first_items)] per job."""
     first = list(dict.fromkeys(first))
     groups = [[x for x in g if x not in first] for g in split_work(seeds, variants, jobs)] if seeds else []
     groups = [g for g in groups if g] or [[]]
     heads = [[] for _ in groups]
-    for i, x in enumerate(first):
-        heads[i % len(groups)].append(x)
+    for x in first:
+        i = min(range(len(groups)), key=lambda k: (len(heads[k]) + len(groups[k]), k))
+        heads[i].append(x)
     return [(h + g, h) for h, g in zip(heads, groups) if h + g]
 
 

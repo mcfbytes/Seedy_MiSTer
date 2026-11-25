@@ -63,7 +63,11 @@ class PlanTest(unittest.TestCase):
     def test_first_items_lead_their_jobs(self):
         first = [("candidate", 7), ("baseline", 1)]
         jobs = plan.split_with_first(list(range(1, 11)), ["candidate"], 2, first)
-        self.assertEqual([h for _, h in jobs], [[("candidate", 7)], [("baseline", 1)]])
+        # seed 7 leaves job 0 (1,3,5,9) and comes back to its front; job 0 is then 5 = job 1, so baseline 1 joins it
+        self.assertEqual([h for _, h in jobs], [[("candidate", 7), ("baseline", 1)], []])
+        # the PSX hunt: seeds 1-31 + the reference of main over 16 jobs = exactly 2 each (one wave of 32)
+        psx = plan.split_with_first(list(range(1, 32)), ["candidate"], 16, [("candidate", 1), ("baseline", 1)])
+        self.assertEqual([len(items) for items, _ in psx], [2] * 16)
         everything = sorted(x for items, _ in jobs for x in items)
         self.assertEqual(everything, sorted([("candidate", s) for s in range(1, 11)] + [("baseline", 1)]))
         self.assertEqual(jobs[0][0][0], ("candidate", 7))  # not compiled twice, and first
